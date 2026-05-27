@@ -13,12 +13,14 @@ MOVE_DELTAS = {
 
 
 class Node:
-    def __init__(self, state, parent=None, move=None, depth=0, cost=0):
+    def __init__(self, state, parent=None, move=None, depth=0, cost=0, h=0, f=0):
         self.state = state
         self.parent = parent
         self.move = move
         self.depth = depth
-        self.cost = cost
+        self.cost = cost # g(n)
+        self.h = h
+        self.f = f
 
 
 def format_state(state):
@@ -283,6 +285,105 @@ def ucs(start_state, goal_state, max_trace_steps=80):
     return None, len(explored), [], trace, "failure"
 
 
+def astar(start_state, goal_state, max_trace_steps=80):
+    if not is_solvable(start_state, goal_state):
+        return None, 0, [], [], "failure"
+
+    def calc_h(state):
+        dist = 0
+        goal_pos = {val: idx for idx, val in enumerate(goal_state)}
+        for idx, val in enumerate(state):
+            if val != 0:
+                curr_r, curr_c = idx // 3, idx % 3
+                g_idx = goal_pos[val]
+                goal_r, goal_c = g_idx // 3, g_idx % 3
+                dist += abs(curr_r - goal_r) + abs(curr_c - goal_c)
+        return dist
+
+    h0 = calc_h(start_state)
+    start_node = Node(start_state, cost=0, h=h0, f=h0)
+    frontier = []
+    counter = 0
+    heappush(frontier, (h0, counter, start_node))
+    best_cost = {start_state: 0}
+    explored = set()
+    trace = []
+
+    while frontier:
+        current_f, _, current_node = heappop(frontier)
+        current_g = current_node.cost
+
+        if current_node.state in explored:
+            continue
+
+        successors = get_successors(current_node.state)
+        accepted = []
+        skipped = []
+
+        if current_node.state == goal_state:
+            path, moves = build_path(current_node)
+            return path, len(explored), moves, trace, "solution"
+
+        explored.add(current_node.state)
+
+        for next_state, move in successors:
+            step_cost = 1
+            new_g = current_g + step_cost
+            next_h = calc_h(next_state)
+            new_f = new_g + next_h
+            parent_steps = current_node.depth
+
+            if next_state in explored:
+                skipped.append((move, next_state, step_cost, new_g, next_h, new_f, parent_steps))
+                continue
+            if new_g >= best_cost.get(next_state, float("inf")):
+                skipped.append((move, next_state, step_cost, new_g, next_h, new_f, parent_steps))
+                continue
+
+            counter += 1
+            child = Node(next_state, current_node, move, current_node.depth + 1, new_g, h=next_h, f=new_f)
+            best_cost[next_state] = new_g
+            heappush(frontier, (new_f, counter, child))
+            accepted.append((move, next_state, step_cost, new_g, next_h, new_f, parent_steps))
+
+        if len(trace) < max_trace_steps:
+            active_frontier = []
+            for f, o, node in sorted(frontier, key=lambda item: (item[0], item[1])):
+                if node.state not in explored and best_cost.get(node.state) == node.cost:
+                    active_frontier.append(
+                        (
+                            node.move,
+                            node.state,
+                            1,
+                            node.cost,
+                            getattr(node, 'h', 0),
+                            f,
+                            node.parent.state if node.parent else None,
+                            node.parent.depth if node.parent else 0,
+                        )
+                    )
+            trace.append(
+                {
+                    "step": len(explored),
+                    "current": current_node.state,
+                    "g": current_g,
+                    "h": calc_h(current_node.state),
+                    "f": current_f,
+                    "possible": successors,
+                    "accepted": accepted,
+                    "skipped": skipped,
+                    "frontier": active_frontier,
+                    "explored": list(explored),
+                    "chosen": active_frontier[0][0] if active_frontier else None,
+                    "chosen_g": active_frontier[0][3] if active_frontier else None,
+                    "chosen_h": active_frontier[0][4] if active_frontier else None,
+                    "chosen_f": active_frontier[0][5] if active_frontier else None,
+                }
+            )
+
+    return None, len(explored), [], trace, "failure"
+
+
 def depth_limited_search(start_state, goal_state, limit, trace, max_trace_steps):
     frontier = [Node(start_state)]
     result = "failure"
@@ -372,6 +473,10 @@ ALGORITHMS = {
         "solver": iterative_deepening_search,
         "description": "IDS chạy Depth-Limited Search nhiều lần với giới hạn tăng dần.",
     },
+    "A*": {
+        "solver": astar,
+        "description": "A* dùng đánh giá f(n) = g(n) + h(n); g(n) = depth, h(n) = Manhattan.",
+    },
 }
 
 
@@ -415,7 +520,8 @@ class PuzzleGUI:
         )
         algorithm_box.pack(fill=tk.X, pady=(0, 10))
 
-        for algorithm in ALGORITHMS:
+        algorithms_keys = list(ALGORITHMS.keys())
+        for idx, algorithm in enumerate(algorithms_keys):
             btn = tk.Button(
                 algorithm_box,
                 text=algorithm,
@@ -430,7 +536,7 @@ class PuzzleGUI:
                 padx=10,
                 pady=8,
             )
-            btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6) if algorithm != "IDS" else 0)
+            btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6) if idx < len(algorithms_keys) - 1 else 0)
             self.algorithm_buttons[algorithm] = btn
 
         self.board_frame = tk.Frame(self.left_frame, bg="#334155", bd=6, relief=tk.FLAT)
@@ -651,6 +757,8 @@ class PuzzleGUI:
             return self.build_ids_trace_report(trace, explored_count, result)
         if algorithm == "UCS":
             return self.build_ucs_trace_report(trace, explored_count, result)
+        if algorithm == "A*":
+            return self.build_astar_trace_report(trace, explored_count, result)
         return self.build_graph_search_trace_report(algorithm, trace, explored_count, result)
 
     def build_graph_search_trace_report(self, algorithm, trace, explored_count, result):
@@ -807,6 +915,102 @@ class PuzzleGUI:
                 [
                     "Đã rút gọn phần hiển thị sau 80 bước để giao diện không quá nặng.",
                     "UCS vẫn tiếp tục mở rộng theo chi phí nhỏ nhất cho đến khi gặp Goal State.",
+                    "",
+                ]
+            )
+
+        lines.extend(self.report_footer(result, explored_count, "Tổng node đã duyệt"))
+        return "\n".join(lines)
+
+    def build_astar_trace_report(self, trace, explored_count, result):
+        lines = self.report_header("A*")
+
+        for item in trace:
+            lines.extend(
+                [
+                    f"Bước {item['step']}",
+                    f"Node hiện tại, g(n) = {item['g']}, h(n) = {item['h']}, f(n) = {item['f']}",
+                    format_state(item["current"]),
+                    "",
+                    zero_position_text(item["current"]),
+                    "",
+                    "Có thể đi:",
+                    *[move for _, move in item["possible"]],
+                    "",
+                ]
+            )
+
+            if item["accepted"]:
+                lines.append("Các node được thêm/cập nhật vào frontier:")
+                for move, state, step_cost, g, h, f, parent_steps in item["accepted"]:
+                    lines.extend(
+                        [
+                            f"Trạng thái cha, số bước của cha = {parent_steps}:",
+                            format_state(item["current"]),
+                            "",
+                            f"Trạng thái di chuyển: {move}",
+                            format_state(state),
+                            f"g(n) = {g}, h(n) = {h}, f(n) = {f}",
+                            "",
+                        ]
+                    )
+
+            if item["skipped"]:
+                lines.append("Bỏ qua vì node đã duyệt hoặc đã có đường đi chi phí tốt hơn:")
+                for move, state, step_cost, g, h, f, parent_steps in item["skipped"]:
+                    lines.extend(
+                        [
+                            f"Trạng thái cha, số bước của cha = {parent_steps}:",
+                            format_state(item["current"]),
+                            "",
+                            f"Trạng thái di chuyển: {move}",
+                            format_state(state),
+                            f"g(n) = {g}, h(n) = {h}, f(n) = {f}",
+                            "",
+                        ]
+                    )
+
+            lines.append("Frontier theo thứ tự chi phí f(n) tăng dần")
+            if item["frontier"]:
+                for move, state, step_cost, g, h, f, parent_state, parent_steps in item["frontier"]:
+                    lines.extend(
+                        [
+                            f"Trạng thái cha, số bước của cha = {parent_steps}:",
+                            format_state(parent_state) if parent_state else "(không có)",
+                            "",
+                            f"Trạng thái di chuyển: {move or 'Start'}",
+                            format_state(state),
+                            f"g(n) = {g}, h(n) = {h}, f(n) = {f}",
+                            "",
+                        ]
+                    )
+            else:
+                lines.extend(["(rỗng)", ""])
+
+            lines.append("Explored")
+            for state in item["explored"]:
+                lines.extend([format_state(state), ""])
+
+            lines.extend(
+                [
+                    "Cách tính: g(n) là số bước từ Start đến node hiện tại, h(n) là khoảng cách Manhattan đến Goal State.",
+                    "f(n) = g(n) + h(n). A* chọn node có f(n) nhỏ nhất.",
+                    (
+                        f"=> Chọn node \"{item['chosen']}\" với g(n) = {item['chosen_g']}, h(n) = {item['chosen_h']}, f(n) = {item['chosen_f']}."
+                        if item["chosen"]
+                        else "=> Không còn node để chọn."
+                    ),
+                    "",
+                    "-" * 44,
+                    "",
+                ]
+            )
+
+        if len(trace) >= 80:
+            lines.extend(
+                [
+                    "Đã rút gọn phần hiển thị sau 80 bước để giao diện không quá nặng.",
+                    "A* vẫn tiếp tục mở rộng cho đến khi gặp Goal State.",
                     "",
                 ]
             )

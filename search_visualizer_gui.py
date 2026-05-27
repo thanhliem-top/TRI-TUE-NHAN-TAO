@@ -16,7 +16,7 @@ MAX_NODES = 50000
 
 class SearchNode:
     """Đại diện cho một nút trong cây tìm kiếm."""
-    def __init__(self, state, parent=None, parent_id=None, move=None, depth=0, cost=0, node_id="", gen_order=0):
+    def __init__(self, state, parent=None, parent_id=None, move=None, depth=0, cost=0, node_id="", gen_order=0, h=0, f=0):
         self.state = state          # Trạng thái bàn cờ dạng tuple 9 phần tử
         self.parent = parent        # Con trỏ tham chiếu đến nút cha
         self.parent_id = parent_id  # Tên định danh của nút cha
@@ -25,6 +25,8 @@ class SearchNode:
         self.cost = cost            # Tổng chi phí g(n) từ Start
         self.id = node_id           # Tên duy nhất (A, B, C, ..., Z, N27, N28, ...)
         self.gen_order = gen_order  # Thứ tự sinh ra để sắp xếp khi chi phí bằng nhau
+        self.h = h                  # Heuristic cost h(n)
+        self.f = f                  # Total cost f(n) = g(n) + h(n)
 
 class SearchStep:
     """Lưu lại ảnh chụp thông tin tại mỗi bước tìm kiếm để mô phỏng."""
@@ -550,13 +552,191 @@ def run_ucs(start, goal, move_order=('L', 'R', 'U', 'D'), cost_mode=1):
         time_taken=0.0, message="No solution found."
     )
 
+def run_astar(start, goal, move_order=('L', 'R', 'U', 'D'), cost_mode=1, heuristic_mode=1):
+    """
+    Thuật toán tìm kiếm A* (A-star).
+    - Dùng heapq.
+    - Sắp xếp ưu tiên: 1. Tổng cost f(n) = g(n) + h(n), 2. Thứ tự sinh nút (gen_order).
+    - g(n) = tổng cost từ Start đến node hiện tại.
+    - h(n) = heuristic từ node hiện tại đến Goal.
+    - Cost mode:
+      + 1: Step cost = 1
+      + 2: Moved tile cost (bằng giá trị số ô tráo đổi với ô trống)
+    - Heuristic mode:
+      + 1: Manhattan Distance
+      + 2: Misplaced Tiles
+    """
+    def calc_h(state):
+        if heuristic_mode == 1:
+            dist = 0
+            goal_pos = {val: idx for idx, val in enumerate(goal)}
+            for idx, val in enumerate(state):
+                if val != 0:
+                    curr_r, curr_c = idx // 3, idx % 3
+                    g_idx = goal_pos[val]
+                    goal_r, goal_c = g_idx // 3, g_idx % 3
+                    dist += abs(curr_r - goal_r) + abs(curr_c - goal_c)
+            return dist
+        else:
+            count = 0
+            for idx, val in enumerate(state):
+                if val != 0 and val != goal[idx]:
+                    count += 1
+            return count
+
+    name_gen = NodeNameGenerator()
+    start_name = name_gen.get_or_create(start)
+    h0 = calc_h(start)
+    start_node = SearchNode(
+        state=start, parent=None, parent_id=None, move=None,
+        depth=0, cost=0, node_id=start_name, gen_order=0, h=h0, f=h0
+    )
+
+    pq = []
+    heapq.heappush(pq, (h0, 0, start_node))
+
+    best_costs = {start: 0}
+    explored = []
+    explored_states = set()
+
+    steps = []
+    step_num = 0
+    max_frontier_size = 1
+    generated_count = 0
+
+    while pq:
+        max_frontier_size = max(max_frontier_size, len(pq))
+        f_val, order, current_node = heapq.heappop(pq)
+
+        if current_node.state in explored_states:
+            continue
+
+        if current_node.state == goal:
+            explored.append(current_node)
+            explored_states.add(current_node.state)
+
+            sorted_pq_nodes = [item[2] for item in sorted(pq, key=lambda x: (x[0], x[1]))]
+
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=sorted_pq_nodes,
+                explored=list(explored),
+                generated_children=[]
+            ))
+
+            path = []
+            curr = current_node
+            while curr:
+                path.append(curr)
+                curr = curr.parent
+            path.reverse()
+
+            moves = [n.move for n in path if n.move is not None]
+            h_name = "Manhattan" if heuristic_mode == 1 else "Misplaced Tiles"
+            c_mode_name = "Step cost=1" if cost_mode == 1 else "Moved tile cost"
+
+            return SearchResult(
+                success=True,
+                algorithm=f"A* ({h_name}, {c_mode_name})",
+                steps=steps,
+                solution_path=path,
+                moves=moves,
+                total_cost=current_node.cost,
+                total_steps=len(moves),
+                expanded_nodes=len(explored),
+                generated_nodes=name_gen.count,
+                max_frontier_size=max_frontier_size,
+                time_taken=0.0
+            )
+
+        explored.append(current_node)
+        explored_states.add(current_node.state)
+
+        children = []
+        neighbors = get_neighbors(current_node.state, move_order)
+        for move, next_state, moved_tile in neighbors:
+            step_cost = 1 if cost_mode == 1 else moved_tile
+            next_g = current_node.cost + step_cost
+
+            if next_state not in explored_states:
+                if next_state not in best_costs or next_g < best_costs[next_state]:
+                    if name_gen.count >= MAX_NODES:
+                        h_name = "Manhattan" if heuristic_mode == 1 else "Misplaced Tiles"
+                        c_mode_name = "Step cost=1" if cost_mode == 1 else "Moved tile cost"
+                        return SearchResult(
+                            success=False,
+                            algorithm=f"A* ({h_name}, {c_mode_name})",
+                            steps=steps,
+                            solution_path=[],
+                            moves=[],
+                            total_cost=0,
+                            total_steps=0,
+                            expanded_nodes=len(explored),
+                            generated_nodes=name_gen.count,
+                            max_frontier_size=max_frontier_size,
+                            time_taken=0.0,
+                            message="Search stopped because node limit was reached."
+                        )
+
+                    best_costs[next_state] = next_g
+                    child_name = name_gen.get_or_create(next_state)
+                    generated_count += 1
+                    child_h = calc_h(next_state)
+                    child_f = next_g + child_h
+                    child_node = SearchNode(
+                        state=next_state,
+                        parent=current_node,
+                        parent_id=current_node.id,
+                        move=move,
+                        depth=current_node.depth + 1,
+                        cost=next_g,
+                        node_id=child_name,
+                        gen_order=generated_count,
+                        h=child_h,
+                        f=child_f
+                    )
+                    heapq.heappush(pq, (child_f, generated_count, child_node))
+                    children.append(child_node)
+
+        sorted_pq_nodes = [item[2] for item in sorted(pq, key=lambda x: (x[0], x[1]))]
+
+        steps.append(SearchStep(
+            step=step_num,
+            current_node=current_node,
+            frontier=sorted_pq_nodes,
+            explored=list(explored),
+            generated_children=children
+        ))
+        step_num += 1
+
+    h_name = "Manhattan" if heuristic_mode == 1 else "Misplaced Tiles"
+    c_mode_name = "Step cost=1" if cost_mode == 1 else "Moved tile cost"
+    return SearchResult(
+        success=False,
+        algorithm=f"A* ({h_name}, {c_mode_name})",
+        steps=steps,
+        solution_path=[],
+        moves=[],
+        total_cost=0,
+        total_steps=0,
+        expanded_nodes=len(explored),
+        generated_nodes=name_gen.count,
+        max_frontier_size=max_frontier_size,
+        time_taken=0.0,
+        message="No solution found."
+    )
+
 # =============================================================================
 # HÀM ĐỊNH DẠNG TEXT ĐỂ IN LÊN SCROLLABLE TEXT WIDGET
 # =============================================================================
 
 def format_node_matrix(node):
     """Trả về chuỗi biểu diễn nút dạng: Tên = (Cha, Hướng, ChiPhí) + ma trận 3x3."""
-    parent_part = f"({node.parent_id}, {node.move}, {node.cost})" if node.parent_id else "Start"
+    if hasattr(node, 'h') and (node.h > 0 or getattr(node, 'f', 0) > 0):
+        parent_part = f"({node.parent_id}, {node.move}, g={node.cost}, h={node.h}, f={node.f})" if node.parent_id else f"Start (g=0, h={node.h}, f={node.f})"
+    else:
+        parent_part = f"({node.parent_id}, {node.move}, {node.cost})" if node.parent_id else "Start"
     header = f"{node.id} = {parent_part}"
     
     rows = []
@@ -700,6 +880,20 @@ class SearchVisualizerApp:
         self.ucs_cost_mode_var = tk.IntVar(value=2)  # Mặc định moved tile cost
         tk.Radiobutton(self.tab_ucs, text="1. Step cost = 1", variable=self.ucs_cost_mode_var, value=1).pack(side=tk.LEFT, padx=5)
         tk.Radiobutton(self.tab_ucs, text="2. Moved tile cost", variable=self.ucs_cost_mode_var, value=2).pack(side=tk.LEFT, padx=5)
+        
+        # Tab A*
+        self.tab_astar = tk.Frame(self.notebook, padx=10, pady=10)
+        self.notebook.add(self.tab_astar, text="A*")
+        
+        tk.Label(self.tab_astar, text="Heuristic:").pack(side=tk.LEFT, padx=5)
+        self.astar_heuristic_mode_var = tk.IntVar(value=1)  # Mặc định Manhattan
+        tk.Radiobutton(self.tab_astar, text="1. Manhattan", variable=self.astar_heuristic_mode_var, value=1).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(self.tab_astar, text="2. Misplaced Tiles", variable=self.astar_heuristic_mode_var, value=2).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(self.tab_astar, text="Cost Mode:").pack(side=tk.LEFT, padx=15)
+        self.astar_cost_mode_var = tk.IntVar(value=2)  # Mặc định moved tile cost
+        tk.Radiobutton(self.tab_astar, text="1. Step cost = 1", variable=self.astar_cost_mode_var, value=1).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(self.tab_astar, text="2. Moved tile cost", variable=self.astar_cost_mode_var, value=2).pack(side=tk.LEFT, padx=5)
         
         # 2. Khung nút bấm điều khiển
         ctrl_frame = tk.Frame(bottom_frame)
@@ -853,9 +1047,13 @@ class SearchVisualizerApp:
                 self.entry_ids_max.delete(0, tk.END)
                 self.entry_ids_max.insert(0, "20")
             result = run_ids(start, goal, max_depth=max_d)
-        else:  # UCS
+        elif tab_idx == 3:  # UCS
             cost_mode = self.ucs_cost_mode_var.get()
             result = run_ucs(start, goal, cost_mode=cost_mode)
+        else:  # A*
+            cost_mode = self.astar_cost_mode_var.get()
+            heuristic_mode = self.astar_heuristic_mode_var.get()
+            result = run_astar(start, goal, cost_mode=cost_mode, heuristic_mode=heuristic_mode)
             
         end_time = time.perf_counter()
         result.time_taken = end_time - start_time
