@@ -2,10 +2,14 @@
 import os
 import time
 import heapq
+import random
+import threading
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 from collections import deque
+import ttkbootstrap as tb
+from ttkbootstrap.constants import *
 
 # Giới hạn số lượng node sinh ra tối đa để tránh treo máy
 MAX_NODES = 50000
@@ -727,6 +731,929 @@ def run_astar(start, goal, move_order=('L', 'R', 'U', 'D'), cost_mode=1, heurist
         message="No solution found."
     )
 
+def run_simple_hill_climbing(start, goal, move_order=('L', 'R', 'U', 'D'), heuristic_mode=1, max_iterations=100):
+    """
+    Thuật toán tìm kiếm Leo đồi Đơn giản (Simple Hill Climbing).
+    - h(n): Manhattan hoặc Misplaced.
+    - Chọn trạng thái lân cận đầu tiên có h nhỏ hơn.
+    """
+    def calc_h(state):
+        if heuristic_mode == 1:
+            dist = 0
+            goal_pos = {val: idx for idx, val in enumerate(goal)}
+            for idx, val in enumerate(state):
+                if val != 0:
+                    curr_r, curr_c = idx // 3, idx % 3
+                    g_idx = goal_pos[val]
+                    goal_r, goal_c = g_idx // 3, g_idx % 3
+                    dist += abs(curr_r - goal_r) + abs(curr_c - goal_c)
+            return dist
+        else:
+            return sum(1 for idx, val in enumerate(state) if val != 0 and val != goal[idx])
+
+    name_gen = NodeNameGenerator()
+    start_name = name_gen.get_or_create(start)
+    h0 = calc_h(start)
+    start_node = SearchNode(
+        state=start, parent=None, parent_id=None, move=None,
+        depth=0, cost=0, node_id=start_name, gen_order=0, h=h0, f=h0
+    )
+
+    steps = []
+    step_num = 0
+    explored = []
+    explored_states = set()
+
+    current_node = start_node
+    generated_count = 1
+    iteration = 0
+
+    while iteration < max_iterations:
+        explored.append(current_node)
+        explored_states.add(current_node.state)
+
+        if current_node.state == goal:
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=[],
+                explored=list(explored),
+                generated_children=[],
+                note="Goal reached!"
+            ))
+
+            path = []
+            curr = current_node
+            while curr:
+                path.append(curr)
+                curr = curr.parent
+            path.reverse()
+            moves = [n.move for n in path if n.move is not None]
+
+            return SearchResult(
+                success=True,
+                algorithm=f"Simple Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                steps=steps,
+                solution_path=path,
+                moves=moves,
+                total_cost=current_node.cost,
+                total_steps=len(moves),
+                expanded_nodes=len(explored),
+                generated_nodes=name_gen.count,
+                max_frontier_size=0,
+                time_taken=0.0
+            )
+
+        neighbors = get_neighbors(current_node.state, move_order)
+        children = []
+        next_node = None
+
+        for move, next_state, moved_tile in neighbors:
+            if name_gen.count >= MAX_NODES:
+                return SearchResult(
+                    success=False,
+                    algorithm=f"Simple Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                    steps=steps,
+                    solution_path=[],
+                    moves=[],
+                    total_cost=0,
+                    total_steps=0,
+                    expanded_nodes=len(explored),
+                    generated_nodes=name_gen.count,
+                    max_frontier_size=0,
+                    time_taken=0.0,
+                    message="Search stopped because node limit was reached."
+                )
+
+            child_name = name_gen.get_or_create(next_state)
+            generated_count += 1
+            child_h = calc_h(next_state)
+            child_node = SearchNode(
+                state=next_state,
+                parent=current_node,
+                parent_id=current_node.id,
+                move=move,
+                depth=current_node.depth + 1,
+                cost=current_node.cost + 1,
+                node_id=child_name,
+                gen_order=generated_count,
+                h=child_h,
+                f=child_h
+            )
+            children.append(child_node)
+
+            if child_h < current_node.h:
+                next_node = child_node
+                break
+
+        if next_node is not None:
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=[],
+                explored=list(explored),
+                generated_children=children,
+                note=f"Chuyển sang {next_node.id} vì h={next_node.h} < {current_node.h}"
+            ))
+            current_node = next_node
+            step_num += 1
+            iteration += 1
+        else:
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=[],
+                explored=list(explored),
+                generated_children=children,
+                note="Dừng vì đã đạt cực đại cục bộ (không có lân cận tốt hơn)"
+            ))
+
+            path = []
+            curr = current_node
+            while curr:
+                path.append(curr)
+                curr = curr.parent
+            path.reverse()
+            moves = [n.move for n in path if n.move is not None]
+
+            return SearchResult(
+                success=False,
+                algorithm=f"Simple Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                steps=steps,
+                solution_path=path,
+                moves=moves,
+                total_cost=current_node.cost,
+                total_steps=len(moves),
+                expanded_nodes=len(explored),
+                generated_nodes=name_gen.count,
+                max_frontier_size=0,
+                time_taken=0.0,
+                message="Dừng vì đã đạt cực đại cục bộ (Local Maximum) mà chưa đạt đích."
+            )
+
+    steps.append(SearchStep(
+        step=step_num,
+        current_node=current_node,
+        frontier=[],
+        explored=list(explored),
+        generated_children=[],
+        note=f"Dừng sau tối đa {max_iterations} vòng lặp"
+    ))
+
+    path = []
+    curr = current_node
+    while curr:
+        path.append(curr)
+        curr = curr.parent
+    path.reverse()
+    moves = [n.move for n in path if n.move is not None]
+
+    return SearchResult(
+        success=False,
+        algorithm=f"Simple Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+        steps=steps,
+        solution_path=path,
+        moves=moves,
+        total_cost=current_node.cost,
+        total_steps=len(moves),
+        expanded_nodes=len(explored),
+        generated_nodes=name_gen.count,
+        max_frontier_size=0,
+        time_taken=0.0,
+        message="Dừng sau số vòng lặp tối đa."
+    )
+
+
+def run_steepest_ascent_hill_climbing(start, goal, move_order=('L', 'R', 'U', 'D'), heuristic_mode=1, max_iterations=100):
+    """Thuật toán Leo đồi Dốc nhất (Steepest Ascent Hill Climbing)."""
+    def calc_h(state):
+        if heuristic_mode == 1:
+            dist = 0
+            goal_pos = {val: idx for idx, val in enumerate(goal)}
+            for idx, val in enumerate(state):
+                if val != 0:
+                    curr_r, curr_c = idx // 3, idx % 3
+                    g_idx = goal_pos[val]
+                    goal_r, goal_c = g_idx // 3, g_idx % 3
+                    dist += abs(curr_r - goal_r) + abs(curr_c - goal_c)
+            return dist
+        else:
+            return sum(1 for idx, val in enumerate(state) if val != 0 and val != goal[idx])
+
+    name_gen = NodeNameGenerator()
+    start_name = name_gen.get_or_create(start)
+    h0 = calc_h(start)
+    start_node = SearchNode(
+        state=start, parent=None, parent_id=None, move=None,
+        depth=0, cost=0, node_id=start_name, gen_order=0, h=h0, f=h0
+    )
+
+    steps = []
+    step_num = 0
+    explored = []
+    explored_states = set()
+
+    current_node = start_node
+    generated_count = 1
+    iteration = 0
+
+    while iteration < max_iterations:
+        explored.append(current_node)
+        explored_states.add(current_node.state)
+
+        if current_node.state == goal:
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=[],
+                explored=list(explored),
+                generated_children=[],
+                note="Goal reached!"
+            ))
+            path = []
+            curr = current_node
+            while curr:
+                path.append(curr)
+                curr = curr.parent
+            path.reverse()
+            moves = [n.move for n in path if n.move is not None]
+            return SearchResult(
+                success=True,
+                algorithm=f"Steepest Ascent Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                steps=steps,
+                solution_path=path,
+                moves=moves,
+                total_cost=current_node.cost,
+                total_steps=len(moves),
+                expanded_nodes=len(explored),
+                generated_nodes=name_gen.count,
+                max_frontier_size=0,
+                time_taken=0.0
+            )
+
+        neighbors = get_neighbors(current_node.state, move_order)
+        children = []
+        better_nodes = []
+
+        for move, next_state, moved_tile in neighbors:
+            if name_gen.count >= MAX_NODES:
+                return SearchResult(
+                    success=False,
+                    algorithm=f"Steepest Ascent Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                    steps=steps,
+                    solution_path=[],
+                    moves=[],
+                    total_cost=0,
+                    total_steps=0,
+                    expanded_nodes=len(explored),
+                    generated_nodes=name_gen.count,
+                    max_frontier_size=0,
+                    time_taken=0.0,
+                    message="Search stopped because node limit was reached."
+                )
+
+            child_name = name_gen.get_or_create(next_state)
+            generated_count += 1
+            child_h = calc_h(next_state)
+            child_node = SearchNode(
+                state=next_state,
+                parent=current_node,
+                parent_id=current_node.id,
+                move=move,
+                depth=current_node.depth + 1,
+                cost=current_node.cost + 1,
+                node_id=child_name,
+                gen_order=generated_count,
+                h=child_h,
+                f=child_h
+            )
+            children.append(child_node)
+            if child_h < current_node.h:
+                better_nodes.append(child_node)
+
+        if better_nodes:
+            next_node = min(better_nodes, key=lambda node: (node.h, node.cost, node.gen_order))
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=better_nodes,
+                explored=list(explored),
+                generated_children=children,
+                note=f"Chuyển sang {next_node.id} vì h={next_node.h} tốt nhất"
+            ))
+            current_node = next_node
+            step_num += 1
+            iteration += 1
+        else:
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=better_nodes,
+                explored=list(explored),
+                generated_children=children,
+                note="Dừng vì đã đạt cực đại cục bộ (không có lân cận tốt nhất tốt hơn)"
+            ))
+            path = []
+            curr = current_node
+            while curr:
+                path.append(curr)
+                curr = curr.parent
+            path.reverse()
+            moves = [n.move for n in path if n.move is not None]
+            return SearchResult(
+                success=False,
+                algorithm=f"Steepest Ascent Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                steps=steps,
+                solution_path=path,
+                moves=moves,
+                total_cost=current_node.cost,
+                total_steps=len(moves),
+                expanded_nodes=len(explored),
+                generated_nodes=name_gen.count,
+                max_frontier_size=0,
+                time_taken=0.0,
+                message="Dừng vì đã đạt cực đại cục bộ (Local Maximum) mà chưa đạt đích."
+            )
+
+    steps.append(SearchStep(
+        step=step_num,
+        current_node=current_node,
+        frontier=[],
+        explored=list(explored),
+        generated_children=[],
+        note=f"Dừng sau tối đa {max_iterations} vòng lặp"
+    ))
+    path = []
+    curr = current_node
+    while curr:
+        path.append(curr)
+        curr = curr.parent
+    path.reverse()
+    moves = [n.move for n in path if n.move is not None]
+    return SearchResult(
+        success=False,
+        algorithm=f"Steepest Ascent Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+        steps=steps,
+        solution_path=path,
+        moves=moves,
+        total_cost=current_node.cost,
+        total_steps=len(moves),
+        expanded_nodes=len(explored),
+        generated_nodes=name_gen.count,
+        max_frontier_size=0,
+        time_taken=0.0,
+        message="Dừng sau số vòng lặp tối đa."
+    )
+
+
+def run_stochastic_hill_climbing(start, goal, move_order=('L', 'R', 'U', 'D'), heuristic_mode=1, max_iterations=100):
+    """Thuật toán Leo đồi Ngẫu nhiên (Stochastic Hill Climbing)."""
+    def calc_h(state):
+        if heuristic_mode == 1:
+            dist = 0
+            goal_pos = {val: idx for idx, val in enumerate(goal)}
+            for idx, val in enumerate(state):
+                if val != 0:
+                    curr_r, curr_c = idx // 3, idx % 3
+                    g_idx = goal_pos[val]
+                    goal_r, goal_c = g_idx // 3, g_idx % 3
+                    dist += abs(curr_r - goal_r) + abs(curr_c - goal_c)
+            return dist
+        else:
+            return sum(1 for idx, val in enumerate(state) if val != 0 and val != goal[idx])
+
+    name_gen = NodeNameGenerator()
+    start_name = name_gen.get_or_create(start)
+    h0 = calc_h(start)
+    start_node = SearchNode(
+        state=start, parent=None, parent_id=None, move=None,
+        depth=0, cost=0, node_id=start_name, gen_order=0, h=h0, f=h0
+    )
+
+    steps = []
+    step_num = 0
+    explored = []
+    explored_states = set()
+
+    current_node = start_node
+    generated_count = 1
+    iteration = 0
+
+    while iteration < max_iterations:
+        explored.append(current_node)
+        explored_states.add(current_node.state)
+
+        if current_node.state == goal:
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=[],
+                explored=list(explored),
+                generated_children=[],
+                note="Goal reached!"
+            ))
+            path = []
+            curr = current_node
+            while curr:
+                path.append(curr)
+                curr = curr.parent
+            path.reverse()
+            moves = [n.move for n in path if n.move is not None]
+            return SearchResult(
+                success=True,
+                algorithm=f"Stochastic Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                steps=steps,
+                solution_path=path,
+                moves=moves,
+                total_cost=current_node.cost,
+                total_steps=len(moves),
+                expanded_nodes=len(explored),
+                generated_nodes=name_gen.count,
+                max_frontier_size=0,
+                time_taken=0.0
+            )
+
+        neighbors = get_neighbors(current_node.state, move_order)
+        children = []
+        better_nodes = []
+
+        for move, next_state, moved_tile in neighbors:
+            if name_gen.count >= MAX_NODES:
+                return SearchResult(
+                    success=False,
+                    algorithm=f"Stochastic Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                    steps=steps,
+                    solution_path=[],
+                    moves=[],
+                    total_cost=0,
+                    total_steps=0,
+                    expanded_nodes=len(explored),
+                    generated_nodes=name_gen.count,
+                    max_frontier_size=0,
+                    time_taken=0.0,
+                    message="Search stopped because node limit was reached."
+                )
+
+            child_name = name_gen.get_or_create(next_state)
+            generated_count += 1
+            child_h = calc_h(next_state)
+            child_node = SearchNode(
+                state=next_state,
+                parent=current_node,
+                parent_id=current_node.id,
+                move=move,
+                depth=current_node.depth + 1,
+                cost=current_node.cost + 1,
+                node_id=child_name,
+                gen_order=generated_count,
+                h=child_h,
+                f=child_h
+            )
+            children.append(child_node)
+            if child_h < current_node.h:
+                better_nodes.append(child_node)
+
+        if better_nodes:
+            next_node = random.choice(better_nodes)
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=better_nodes,
+                explored=list(explored),
+                generated_children=children,
+                note=f"Chọn ngẫu nhiên {next_node.id} với h={next_node.h}"
+            ))
+            current_node = next_node
+            step_num += 1
+            iteration += 1
+        else:
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=better_nodes,
+                explored=list(explored),
+                generated_children=children,
+                note="Dừng vì đã đạt cực đại cục bộ (không có lân cận tốt hơn)"
+            ))
+            path = []
+            curr = current_node
+            while curr:
+                path.append(curr)
+                curr = curr.parent
+            path.reverse()
+            moves = [n.move for n in path if n.move is not None]
+            return SearchResult(
+                success=False,
+                algorithm=f"Stochastic Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                steps=steps,
+                solution_path=path,
+                moves=moves,
+                total_cost=current_node.cost,
+                total_steps=len(moves),
+                expanded_nodes=len(explored),
+                generated_nodes=name_gen.count,
+                max_frontier_size=0,
+                time_taken=0.0,
+                message="Dừng vì đã đạt cực đại cục bộ (Local Maximum) mà chưa đạt đích."
+            )
+
+    steps.append(SearchStep(
+        step=step_num,
+        current_node=current_node,
+        frontier=[],
+        explored=list(explored),
+        generated_children=[],
+        note=f"Dừng sau tối đa {max_iterations} vòng lặp"
+    ))
+    path = []
+    curr = current_node
+    while curr:
+        path.append(curr)
+        curr = curr.parent
+    path.reverse()
+    moves = [n.move for n in path if n.move is not None]
+    return SearchResult(
+        success=False,
+        algorithm=f"Stochastic Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+        steps=steps,
+        solution_path=path,
+        moves=moves,
+        total_cost=current_node.cost,
+        total_steps=len(moves),
+        expanded_nodes=len(explored),
+        generated_nodes=name_gen.count,
+        max_frontier_size=0,
+        time_taken=0.0,
+        message="Dừng sau số vòng lặp tối đa."
+    )
+
+
+def run_random_restart_hill_climbing(start, goal, move_order=('L', 'R', 'U', 'D'), heuristic_mode=1, max_iterations=100, restarts=5):
+    """Thuật toán Leo đồi với Khởi động lại ngẫu nhiên (Random Restart Hill Climbing)."""
+    def calc_h(state):
+        if heuristic_mode == 1:
+            dist = 0
+            goal_pos = {val: idx for idx, val in enumerate(goal)}
+            for idx, val in enumerate(state):
+                if val != 0:
+                    curr_r, curr_c = idx // 3, idx % 3
+                    g_idx = goal_pos[val]
+                    goal_r, goal_c = g_idx // 3, g_idx % 3
+                    dist += abs(curr_r - goal_r) + abs(curr_c - goal_c)
+            return dist
+        else:
+            return sum(1 for idx, val in enumerate(state) if val != 0 and val != goal[idx])
+
+    def random_walk(node, steps=3):
+        current = node
+        for _ in range(steps):
+            neighbors = get_neighbors(current.state, move_order)
+            if not neighbors:
+                break
+            move, next_state, moved_tile = random.choice(neighbors)
+            child_name = name_gen.get_or_create(next_state)
+            nonlocal generated_count
+            generated_count += 1
+            child_h = calc_h(next_state)
+            child_node = SearchNode(
+                state=next_state,
+                parent=current,
+                parent_id=current.id,
+                move=move,
+                depth=current.depth + 1,
+                cost=current.cost + 1,
+                node_id=child_name,
+                gen_order=generated_count,
+                h=child_h,
+                f=child_h
+            )
+            current = child_node
+            explored.append(current)
+            explored_states.add(current.state)
+        return current
+
+    name_gen = NodeNameGenerator()
+    start_name = name_gen.get_or_create(start)
+    h0 = calc_h(start)
+    start_node = SearchNode(
+        state=start, parent=None, parent_id=None, move=None,
+        depth=0, cost=0, node_id=start_name, gen_order=0, h=h0, f=h0
+    )
+
+    steps = [SearchStep(
+        step=0,
+        current_node=start_node,
+        frontier=[start_node],
+        explored=[],
+        generated_children=[start_node],
+        note=f"Start và Random Restart tối đa={restarts}"
+    )]
+    step_num = 1
+    explored = []
+    explored_states = {start}
+
+    current_node = start_node
+    generated_count = 1
+    restart = 0
+
+    while restart <= restarts:
+        iteration = 0
+        while iteration < max_iterations:
+            if current_node.state == goal:
+                steps.append(SearchStep(
+                    step=step_num,
+                    current_node=current_node,
+                    frontier=[],
+                    explored=list(explored),
+                    generated_children=[],
+                    note=f"Goal reached after restart {restart}"
+                ))
+                path = []
+                curr = current_node
+                while curr:
+                    path.append(curr)
+                    curr = curr.parent
+                path.reverse()
+                moves = [n.move for n in path if n.move is not None]
+                return SearchResult(
+                    success=True,
+                    algorithm=f"Random Restart Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                    steps=steps,
+                    solution_path=path,
+                    moves=moves,
+                    total_cost=current_node.cost,
+                    total_steps=len(moves),
+                    expanded_nodes=len(explored),
+                    generated_nodes=name_gen.count,
+                    max_frontier_size=0,
+                    time_taken=0.0
+                )
+
+            neighbors = get_neighbors(current_node.state, move_order)
+            children = []
+            better_nodes = []
+
+            for move, next_state, moved_tile in neighbors:
+                if name_gen.count >= MAX_NODES:
+                    return SearchResult(
+                        success=False,
+                        algorithm=f"Random Restart Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+                        steps=steps,
+                        solution_path=[],
+                        moves=[],
+                        total_cost=0,
+                        total_steps=0,
+                        expanded_nodes=len(explored),
+                        generated_nodes=name_gen.count,
+                        max_frontier_size=0,
+                        time_taken=0.0,
+                        message="Search stopped because node limit was reached."
+                    )
+
+                child_name = name_gen.get_or_create(next_state)
+                generated_count += 1
+                child_h = calc_h(next_state)
+                child_node = SearchNode(
+                    state=next_state,
+                    parent=current_node,
+                    parent_id=current_node.id,
+                    move=move,
+                    depth=current_node.depth + 1,
+                    cost=current_node.cost + 1,
+                    node_id=child_name,
+                    gen_order=generated_count,
+                    h=child_h,
+                    f=child_h
+                )
+                children.append(child_node)
+                if child_h < current_node.h:
+                    better_nodes.append(child_node)
+
+            if better_nodes:
+                next_node = random.choice(better_nodes)
+                steps.append(SearchStep(
+                    step=step_num,
+                    current_node=current_node,
+                    frontier=better_nodes,
+                    explored=list(explored),
+                    generated_children=children,
+                    note=f"Chuyển sang {next_node.id} với h={next_node.h} trong restart {restart}"
+                ))
+                current_node = next_node
+                step_num += 1
+                iteration += 1
+            else:
+                steps.append(SearchStep(
+                    step=step_num,
+                    current_node=current_node,
+                    frontier=better_nodes,
+                    explored=list(explored),
+                    generated_children=children,
+                    note=f"Stuck tại restart {restart}, sẽ khởi động lại ngẫu nhiên"
+                ))
+                current_node = random_walk(current_node, steps=3)
+                step_num += 1
+                restart += 1
+                break
+
+        if current_node.state == goal:
+            break
+        if iteration >= max_iterations:
+            steps.append(SearchStep(
+                step=step_num,
+                current_node=current_node,
+                frontier=[],
+                explored=list(explored),
+                generated_children=[],
+                note=f"Dừng sau tối đa {max_iterations} vòng lặp tại restart {restart}"
+            ))
+            step_num += 1
+            if restart < restarts:
+                current_node = random_walk(current_node, steps=3)
+                step_num += 1
+                restart += 1
+            else:
+                break
+
+    if current_node.state == goal:
+        path = []
+        curr = current_node
+        while curr:
+            path.append(curr)
+            curr = curr.parent
+        path.reverse()
+        moves = [n.move for n in path if n.move is not None]
+        return SearchResult(
+            success=True,
+            algorithm=f"Random Restart Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+            steps=steps,
+            solution_path=path,
+            moves=moves,
+            total_cost=current_node.cost,
+            total_steps=len(moves),
+            expanded_nodes=len(explored),
+            generated_nodes=name_gen.count,
+            max_frontier_size=0,
+            time_taken=0.0
+        )
+
+    path = []
+    curr = current_node
+    while curr:
+        path.append(curr)
+        curr = curr.parent
+    path.reverse()
+    moves = [n.move for n in path if n.move is not None]
+    return SearchResult(
+        success=False,
+        algorithm=f"Random Restart Hill Climbing ({'Manhattan' if heuristic_mode == 1 else 'Misplaced'})",
+        steps=steps,
+        solution_path=path,
+        moves=moves,
+        total_cost=current_node.cost,
+        total_steps=len(moves),
+        expanded_nodes=len(explored),
+        generated_nodes=name_gen.count,
+        max_frontier_size=0,
+        time_taken=0.0,
+        message="Goal not found sau nhiều khởi động lại ngẫu nhiên."
+    )
+
+
+def run_local_beam_search(start, goal, move_order=('L', 'R', 'U', 'D'), beam_width=3, max_iterations=100, heuristic_mode=1):
+    """Thuật toán Local Beam Search cho 8-puzzle."""
+    def calc_h(state):
+        if heuristic_mode == 1:
+            dist = 0
+            goal_pos = {val: idx for idx, val in enumerate(goal)}
+            for idx, val in enumerate(state):
+                if val != 0:
+                    curr_r, curr_c = idx // 3, idx % 3
+                    g_idx = goal_pos[val]
+                    goal_r, goal_c = g_idx // 3, g_idx % 3
+                    dist += abs(curr_r - goal_r) + abs(curr_c - goal_c)
+            return dist
+        else:
+            return sum(1 for idx, val in enumerate(state) if val != 0 and val != goal[idx])
+
+    name_gen = NodeNameGenerator()
+    start_name = name_gen.get_or_create(start)
+    h0 = calc_h(start)
+    start_node = SearchNode(
+        state=start, parent=None, parent_id=None, move=None,
+        depth=0, cost=0, node_id=start_name, gen_order=0, h=h0, f=h0
+    )
+
+    beam = [start_node]
+    explored = []
+    explored_states = {start}
+    steps = [SearchStep(
+        step=0,
+        current_node=start_node,
+        frontier=list(beam),
+        explored=list(explored),
+        generated_children=list(beam),
+        note=f"Initial beam k={beam_width}"
+    )]
+    max_frontier_size = len(beam)
+    iteration = 0
+
+    while iteration < max_iterations:
+        if any(node.state == goal for node in beam):
+            break
+
+        successors = []
+        for node in beam:
+            explored.append(node)
+            for move, next_state, moved_tile in get_neighbors(node.state, move_order):
+                if next_state in explored_states:
+                    continue
+                explored_states.add(next_state)
+
+                child_name = name_gen.get_or_create(next_state)
+                child_h = calc_h(next_state)
+                child_node = SearchNode(
+                    state=next_state,
+                    parent=node,
+                    parent_id=node.id,
+                    move=move,
+                    depth=node.depth + 1,
+                    cost=node.cost + 1,
+                    node_id=child_name,
+                    gen_order=name_gen.count - 1,
+                    h=child_h,
+                    f=child_h
+                )
+                successors.append(child_node)
+
+        if not successors:
+            break
+
+        successors.sort(key=lambda n: (n.h, n.cost, n.gen_order))
+        beam = successors[:beam_width]
+        max_frontier_size = max(max_frontier_size, len(successors))
+        iteration += 1
+
+        steps.append(SearchStep(
+            step=iteration,
+            current_node=beam[0],
+            frontier=list(beam),
+            explored=list(explored),
+            generated_children=list(beam),
+            note=f"Beam k={beam_width}, iter={iteration}"
+        ))
+
+        if any(node.state == goal for node in beam):
+            break
+
+    goal_node = next((node for node in beam if node.state == goal), None)
+    if goal_node:
+        path = []
+        curr = goal_node
+        while curr:
+            path.append(curr)
+            curr = curr.parent
+        path.reverse()
+        moves = [n.move for n in path if n.move is not None]
+
+        return SearchResult(
+            success=True,
+            algorithm=f"Local Beam Search (k={beam_width})",
+            steps=steps,
+            solution_path=path,
+            moves=moves,
+            total_cost=goal_node.cost,
+            total_steps=len(moves),
+            expanded_nodes=len(explored),
+            generated_nodes=name_gen.count,
+            max_frontier_size=max_frontier_size,
+            time_taken=0.0
+        )
+
+    best_node = beam[0]
+    path = []
+    curr = best_node
+    while curr:
+        path.append(curr)
+        curr = curr.parent
+    path.reverse()
+    moves = [n.move for n in path if n.move is not None]
+
+    return SearchResult(
+        success=False,
+        algorithm=f"Local Beam Search (k={beam_width})",
+        steps=steps,
+        solution_path=path,
+        moves=moves,
+        total_cost=best_node.cost,
+        total_steps=len(moves),
+        expanded_nodes=len(explored),
+        generated_nodes=name_gen.count,
+        max_frontier_size=max_frontier_size,
+        time_taken=0.0,
+        message="Goal not found within max iterations."
+    )
+
 # =============================================================================
 # HÀM ĐỊNH DẠNG TEXT ĐỂ IN LÊN SCROLLABLE TEXT WIDGET
 # =============================================================================
@@ -751,187 +1678,413 @@ def format_explored_matrix(node):
         rows.append(f"{node.state[i]} {node.state[i+1]} {node.state[i+2]}")
     return "\n".join(rows)
 
+def format_state_matrix(state):
+    """Trả về chuỗi biểu diễn trực tiếp 3x3 của trạng thái bàn cờ."""
+    rows = []
+    for i in range(0, 9, 3):
+        rows.append(f"{state[i]} {state[i+1]} {state[i+2]}")
+    return "\n".join(rows)
+
 # =============================================================================
-# LỚP GIAO DIỆN CHÍNH (TKINTER APP)
+# BỘ SINH TRẠNG THÁI NGẪU NHIÊN CHẮC CHẮN GIẢI ĐƯỢC
+# =============================================================================
+
+def generate_random_puzzle(difficulty="medium"):
+    """
+    Sinh một trạng thái 8-puzzle ngẫu nhiên chắc chắn giải được bằng cách
+    đi lùi ngẫu nhiên (random walk backward) từ trạng thái đích.
+    """
+    state = (1, 2, 3, 4, 5, 6, 7, 8, 0)
+    visited = {state}
+    
+    if difficulty == "easy":
+        steps = random.randint(5, 8)
+    elif difficulty == "hard":
+        steps = random.randint(25, 35)
+    else:  # medium
+        steps = random.randint(12, 18)
+        
+    curr = state
+    for _ in range(steps):
+        blank_idx = curr.index(0)
+        r = blank_idx // 3
+        c = blank_idx % 3
+        moves = []
+        if r > 0: moves.append(-3)  # Up
+        if r < 2: moves.append(3)   # Down
+        if c > 0: moves.append(-1)  # Left
+        if c < 2: moves.append(1)   # Right
+        
+        next_states = []
+        for m in moves:
+            lst = list(curr)
+            lst[blank_idx], lst[blank_idx+m] = lst[blank_idx+m], lst[blank_idx]
+            next_states.append(tuple(lst))
+            
+        valid_next = [s for s in next_states if s not in visited]
+        if not valid_next:
+            valid_next = next_states
+            
+        curr = random.choice(valid_next)
+        visited.add(curr)
+        
+    return curr
+
+
+# =============================================================================
+# LỚP GIAO DIỆN CHÍNH (UPGRADED TTKBOOTSTRAP APP)
 # =============================================================================
 
 class SearchVisualizerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("8-Puzzle Search Visualizer (Tkinter GUI)")
-        self.root.geometry("900x700")
-        self.root.minsize(850, 650)
+        self.root.title("8-Puzzle Search Visualizer (Upgraded UI)")
         
         # Biến quản lý trạng thái
         self.steps = []
+        self.search_steps = []
+        self.solution_steps = []
         self.current_step_idx = -1
         self.result = None
         self.auto_playing = False
         
-        # Trạng thái start/goal mặc định
+        # Trạng thái mặc định
         self.default_start = (1, 2, 3, 4, 0, 6, 7, 5, 8)
         self.default_goal = (1, 2, 3, 4, 5, 6, 7, 8, 0)
+        self.current_board_state = self.default_start
+        self.manual_moves = 0
+        self.play_speed = 700  # ms
         
         # Thiết lập giao diện
         self.create_widgets()
+        self.on_algo_change()
         self.load_example_state()
         
     def create_widgets(self):
-        # ---------------------------------------------------------------------
-        # TOP PANEL: Nhập Start State / Goal State
-        # ---------------------------------------------------------------------
-        top_frame = tk.LabelFrame(self.root, text="Thiết lập trạng thái ban đầu", padx=10, pady=5)
-        top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+        # Frame chính
+        main_frame = tb.Frame(self.root)
+        main_frame.pack(fill=BOTH, expand=YES, padx=10, pady=10)
         
-        tk.Label(top_frame, text="Start state:").grid(row=0, column=0, sticky=tk.W, padx=5)
-        self.entry_start = tk.Entry(top_frame, width=25)
-        self.entry_start.grid(row=0, column=1, padx=5)
+        # ---------------------------------------------------------------------
+        # TOP PANEL: Cấu hình Trạng thái & Giao diện
+        # ---------------------------------------------------------------------
+        top_frame = tb.LabelFrame(main_frame, text=" Cấu hình Trạng thái & Giao diện ")
+        top_frame.pack(side=TOP, fill=X, padx=10, pady=(0, 10))
+        
+        # Grid layout cho Top frame
+        top_frame.columnconfigure(1, weight=1)
+        top_frame.columnconfigure(3, weight=1)
+        
+        tb.Label(top_frame, text="Start state:").grid(row=0, column=0, sticky=W, padx=5, pady=5)
+        self.entry_start = tb.Entry(top_frame)
+        self.entry_start.grid(row=0, column=1, sticky=EW, padx=5, pady=5)
         self.entry_start.insert(0, "1 2 3 4 0 6 7 5 8")
         
-        tk.Label(top_frame, text="Goal state:").grid(row=0, column=2, sticky=tk.W, padx=5)
-        self.entry_goal = tk.Entry(top_frame, width=25)
-        self.entry_goal.grid(row=0, column=3, padx=5)
+        tb.Label(top_frame, text="Goal state:").grid(row=0, column=2, sticky=W, padx=5, pady=5)
+        self.entry_goal = tb.Entry(top_frame)
+        self.entry_goal.grid(row=0, column=3, sticky=EW, padx=5, pady=5)
         self.entry_goal.insert(0, "1 2 3 4 5 6 7 8 0")
         
-        btn_load = tk.Button(top_frame, text="Load Example", command=self.load_example_state)
-        btn_load.grid(row=0, column=4, padx=15)
+        self.btn_load_example = tb.Button(top_frame, text="Mặc định", bootstyle=SECONDARY, command=self.load_example_state)
+        self.btn_load_example.grid(row=0, column=4, padx=5, pady=5)
+        
+        tb.Label(top_frame, text="Giao diện:").grid(row=0, column=5, sticky=W, padx=10, pady=5)
+        self.theme_combo = tb.Combobox(
+            top_frame, 
+            values=["darkly", "superhero", "cyborg", "vapor", "solar", "flatly", "cosmo", "sandstone", "yeti"], 
+            state="readonly", 
+            width=10
+        )
+        self.theme_combo.grid(row=0, column=6, padx=5, pady=5)
+        self.theme_combo.set("darkly")
+        self.theme_combo.bind("<<ComboboxSelected>>", self.change_theme)
         
         # ---------------------------------------------------------------------
-        # MIDDLE PANEL: Chia làm 2 cột (Trái: Bàn cờ, Phải: Text Log)
+        # MIDDLE DIVISION: Left (Board & Tools), Right (Visualizer & Comparison)
         # ---------------------------------------------------------------------
-        mid_frame = tk.Frame(self.root)
-        mid_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=5)
+        mid_frame = tb.Frame(main_frame)
+        mid_frame.pack(side=TOP, fill=BOTH, expand=YES)
         
-        # Cột trái: Bàn cờ 3x3
-        left_panel = tk.LabelFrame(mid_frame, text="Bàn cờ hiện tại (Current Board)", padx=10, pady=10, width=320)
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
+        # Cột trái: Bàn cờ & Điều khiển Chơi
+        left_panel = tb.Frame(mid_frame)
+        left_panel.pack(side=LEFT, fill=Y, padx=(0, 15))
         
-        # Khung chứa ma trận 3x3
-        self.board_frame = tk.Frame(left_panel, bg="#B0B0B0", bd=2, relief=tk.SOLID)
-        self.board_frame.pack(expand=True)
+        # Bàn cờ 3x3
+        board_container = tb.LabelFrame(left_panel, text=" Bàn cờ (Nhấp ô liền kề để chơi) ")
+        board_container.pack(side=TOP, fill=X, padx=10, pady=(0, 10))
+        
+        self.board_frame = tb.Frame(board_container)
+        self.board_frame.pack(anchor=CENTER)
         
         self.tiles = []
         for r in range(3):
             row_tiles = []
             for c in range(3):
-                # Tạo label đại diện cho ô số trên bàn cờ
                 lbl = tk.Label(
-                    self.board_frame, text="", font=("Helvetica", 28, "bold"),
-                    width=5, height=2, bd=1, relief=tk.RAISED, bg="#FFFFFF", fg="#333333"
+                    self.board_frame, text="", font=("Helvetica", 24, "bold"),
+                    width=5, height=2, bd=2, relief=tk.RAISED, bg="#2C3E50", fg="#FFFFFF"
                 )
                 lbl.grid(row=r, column=c, padx=3, pady=3)
+                lbl.bind("<Button-1>", lambda event, row=r, col=c: self.click_tile(row, col))
                 row_tiles.append(lbl)
             self.tiles.append(row_tiles)
             
-        # Cột phải: Scrollable Text Widget in chi tiết bước chạy
-        right_panel = tk.LabelFrame(mid_frame, text="Chi tiết các bước tìm kiếm (Step Log)", padx=10, pady=10)
-        right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Sinh trạng thái
+        gen_container = tb.LabelFrame(left_panel, text=" Sinh Trạng Thái Ngẫu Nhiên ")
+        gen_container.pack(side=TOP, fill=X, padx=10, pady=(0, 10))
         
-        # Dùng một Text widget kèm Scrollbar
-        self.scrollbar = tk.Scrollbar(right_panel)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tb.Button(gen_container, text="Dễ", bootstyle=SUCCESS, command=lambda: self.generate_board("easy")).pack(side=LEFT, fill=X, expand=YES, padx=2)
+        tb.Button(gen_container, text="T.Bình", bootstyle=INFO, command=lambda: self.generate_board("medium")).pack(side=LEFT, fill=X, expand=YES, padx=2)
+        tb.Button(gen_container, text="Khó", bootstyle=DANGER, command=lambda: self.generate_board("hard")).pack(side=LEFT, fill=X, expand=YES, padx=2)
         
-        # Font Monospace: Consolas 11 hoặc Courier New 11
-        self.text_log = tk.Text(
-            right_panel, font=("Consolas", 11), wrap=tk.WORD,
-            yscrollcommand=self.scrollbar.set, bg="#FCFCFC", fg="#111111"
+        # Chơi thủ công & Gợi ý
+        manual_container = tb.LabelFrame(left_panel, text=" Chơi Thủ Công & Gợi Ý ")
+        manual_container.pack(side=TOP, fill=X, padx=10, pady=(0, 10))
+        
+        self.lbl_manual_status = tb.Label(manual_container, text="Số bước đi bằng tay: 0", font=("Helvetica", 10))
+        self.lbl_manual_status.pack(anchor=W, pady=(0, 8))
+        
+        tb.Button(manual_container, text="Chơi Lại", bootstyle=SECONDARY, command=self.reset_manual_play).pack(side=LEFT, fill=X, expand=YES, padx=2)
+        tb.Button(manual_container, text="Gợi Ý", bootstyle=WARNING, command=self.get_hint).pack(side=LEFT, fill=X, expand=YES, padx=2)
+        
+        # Cột phải: Notebook cho Trực quan & So sánh
+        right_panel = tb.Frame(mid_frame)
+        right_panel.pack(side=LEFT, fill=BOTH, expand=YES)
+        
+        self.notebook = tb.Notebook(right_panel, bootstyle=PRIMARY)
+        self.notebook.pack(fill=BOTH, expand=YES)
+        
+        # Tab 1: Trực quan hóa
+        self.tab_visualizer = tb.Frame(self.notebook)
+        self.tab_visualizer.pack_configure(padx=10, pady=10)
+        self.notebook.add(self.tab_visualizer, text="Trực quan tìm kiếm")
+        
+        # Khung thuật toán ở trên cùng Tab 1
+        algo_frame = tb.Frame(self.tab_visualizer)
+        algo_frame.pack(side=TOP, fill=X, padx=5, pady=(0, 5))
+        
+        tb.Label(algo_frame, text="Thuật toán:").pack(side=LEFT, padx=5)
+        self.algo_combo = tb.Combobox(
+            algo_frame, 
+            values=["BFS", "DFS", "IDS", "UCS", "A*", "Simple Hill Climbing", "Steepest Ascent Hill Climbing", "Stochastic Hill Climbing", "Random Restart Hill Climbing", "Local Beam Search"], 
+            state="readonly", 
+            width=24
         )
-        self.text_log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.algo_combo.pack(side=LEFT, padx=5)
+        self.algo_combo.set("A*")
+        self.algo_combo.bind("<<ComboboxSelected>>", self.on_algo_change)
+        
+        # Khung cấu hình động của từng thuật toán
+        self.options_frame = tb.Frame(self.tab_visualizer)
+        self.options_frame.pack(side=TOP, fill=X, padx=5, pady=(0, 5))
+        
+        # Khung điều khiển chạy từng bước
+        ctrl_container = tb.LabelFrame(self.tab_visualizer, text=" Bảng Điều Khiển Chạy ")
+        ctrl_container.pack(side=TOP, fill=X, padx=10, pady=(0, 10))
+        
+        btn_row = tb.Frame(ctrl_container)
+        btn_row.pack(fill=X, pady=2)
+        
+        self.btn_run = tb.Button(btn_row, text="Chạy Tìm Kiếm", bootstyle=SUCCESS, width=12, command=self.click_run_search)
+        self.btn_run.pack(side=LEFT, padx=2)
+        
+        self.btn_reset = tb.Button(btn_row, text="Về Đầu", bootstyle=SECONDARY, width=10, command=self.click_reset)
+        self.btn_reset.pack(side=LEFT, padx=2)
+        
+        self.btn_prev = tb.Button(btn_row, text="Lùi 1 Bước", bootstyle=SECONDARY, width=10, command=self.click_prev_step)
+        self.btn_prev.pack(side=LEFT, padx=2)
+        
+        self.btn_next = tb.Button(btn_row, text="Tiến 1 Bước", bootstyle=SECONDARY, width=10, command=self.click_next_step)
+        self.btn_next.pack(side=LEFT, padx=2)
+        
+        self.btn_auto = tb.Button(btn_row, text="Tự Động Chạy", bootstyle=INFO, width=12, command=self.click_auto_play)
+        self.btn_auto.pack(side=LEFT, padx=2)
+        
+        self.btn_pause = tb.Button(btn_row, text="Tạm Dừng", bootstyle=WARNING, width=10, command=self.click_pause)
+        self.btn_pause.pack(side=LEFT, padx=2)
+        
+        # Chế độ xem: Tìm kiếm vs Lời giải
+        mode_row = tb.Frame(ctrl_container)
+        mode_row.pack(fill=X, pady=(0, 5))
+        
+        tb.Label(mode_row, text="Chế độ xem:").pack(side=LEFT, padx=5)
+        self.view_mode_var = tk.StringVar(value="search")
+        
+        self.rad_search_mode = tb.Radiobutton(
+            mode_row, text="Tiến trình tìm kiếm (Frontier)", 
+            variable=self.view_mode_var, value="search", 
+            command=self.toggle_view_mode
+        )
+        self.rad_search_mode.pack(side=LEFT, padx=10)
+        
+        self.rad_solution_mode = tb.Radiobutton(
+            mode_row, text="Đường đi lời giải (Solution Path)", 
+            variable=self.view_mode_var, value="solution", 
+            command=self.toggle_view_mode
+        )
+        self.rad_solution_mode.pack(side=LEFT, padx=10)
+        
+        # Thanh trượt tốc độ & Tiến trình
+        slider_row = tb.Frame(ctrl_container)
+        slider_row.pack(fill=X, pady=(8, 2))
+        
+        tb.Label(slider_row, text="Tốc độ:").pack(side=LEFT, padx=5)
+        self.speed_slider = tb.Scale(slider_row, from_=100, to=2000, orient=tk.HORIZONTAL, value=700, command=self.change_speed)
+        self.speed_slider.config(length=100)
+        self.speed_slider.pack(side=LEFT, padx=5, fill=X, expand=NO)
+        self.lbl_speed_val = tb.Label(slider_row, text="700ms", width=6)
+        self.lbl_speed_val.pack(side=LEFT, padx=2)
+        
+        tb.Label(slider_row, text="Bước:").pack(side=LEFT, padx=(15, 5))
+        self.step_slider = tb.Scale(slider_row, from_=0, to=0, orient=tk.HORIZONTAL, command=self.slide_step)
+        self.step_slider.pack(side=LEFT, fill=X, expand=YES, padx=5)
+        
+        # Text log hiển thị bước
+        log_container = tb.LabelFrame(self.tab_visualizer, text=" Nhật Ký Từng Bước (Step Log) ")
+        log_container.pack(side=TOP, fill=BOTH, expand=YES, padx=10, pady=10)
+        
+        self.scrollbar = tb.Scrollbar(log_container, orient=VERTICAL)
+        self.scrollbar.pack(side=RIGHT, fill=Y)
+        
+        self.text_log = tb.Text(
+            log_container, font=("Consolas", 10), wrap=WORD,
+            yscrollcommand=self.scrollbar.set, bg="#1E1E1E", fg="#D4D4D4"
+        )
+        self.text_log.pack(side=LEFT, fill=BOTH, expand=YES)
         self.scrollbar.config(command=self.text_log.yview)
+        self.text_log.config(state=DISABLED)
         
-        # Mặc định khoá Text widget không cho chỉnh sửa
-        self.text_log.config(state=tk.DISABLED)
+        # Tab 2: So sánh hiệu năng
+        self.tab_comparison = tb.Frame(self.notebook)
+        self.tab_comparison.pack_configure(padx=10, pady=10)
+        self.notebook.add(self.tab_comparison, text="Bảng so sánh thuật toán")
+        
+        comp_container = tb.Frame(self.tab_comparison)
+        comp_container.pack(fill=BOTH, expand=YES)
+        
+        top_comp_bar = tb.Frame(comp_container)
+        top_comp_bar.pack(side=TOP, fill=X, pady=(0, 10))
+        
+        self.btn_compare_all = tb.Button(
+            top_comp_bar, text="Chạy tất cả thuật toán & So sánh", 
+            bootstyle=DANGER, command=self.click_compare_all
+        )
+        self.btn_compare_all.pack(side=LEFT)
+        
+        self.lbl_comp_status = tb.Label(top_comp_bar, text="Trạng thái: Sẵn sàng so sánh", font=("Helvetica", 10, "italic"))
+        self.lbl_comp_status.pack(side=LEFT, padx=15)
+        
+        # Cấu hình bảng Treeview
+        self.tree = tb.Treeview(
+            comp_container, 
+            columns=("algo", "success", "steps", "cost", "expanded", "generated", "time"), 
+            show="headings", 
+            bootstyle=DANGER
+        )
+        self.tree.pack(side=TOP, fill=BOTH, expand=YES)
+        
+        self.tree.heading("algo", text="Thuật toán")
+        self.tree.heading("success", text="Kết quả")
+        self.tree.heading("steps", text="Số bước")
+        self.tree.heading("cost", text="Chi phí (g)")
+        self.tree.heading("expanded", text="Nút duyệt (Expanded)")
+        self.tree.heading("generated", text="Nút sinh (Generated)")
+        self.tree.heading("time", text="Thời gian (ms)")
+        
+        self.tree.column("algo", width=180, anchor=W)
+        self.tree.column("success", width=90, anchor=CENTER)
+        self.tree.column("steps", width=80, anchor=E)
+        self.tree.column("cost", width=80, anchor=E)
+        self.tree.column("expanded", width=150, anchor=E)
+        self.tree.column("generated", width=150, anchor=E)
+        self.tree.column("time", width=110, anchor=E)
+        
+        tree_scroll = tb.Scrollbar(self.tree, orient=VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_scroll.set)
+        tree_scroll.pack(side=RIGHT, fill=Y)
+        
+        note_lbl = tb.Label(
+            comp_container, 
+            text="Lưu ý:\n- Các thuật toán Heuristic (A*) được chạy với Heuristic: Manhattan.\n- Chi phí (Cost Mode) được cài đặt là Moved tile cost (Chi phí = Giá trị ô di chuyển).\n- DFS và IDS chạy với giới hạn độ sâu (Limit) là 20 để tránh quá tải.\n- So sánh sẽ chạy ngầm (multi-threaded) nên giao diện sẽ không bị đơ.",
+            justify=LEFT, anchor=W
+        )
+        note_lbl.pack(side=BOTTOM, fill=X, padx=0, pady=10)
         
         # ---------------------------------------------------------------------
-        # BOTTOM PANEL: Chứa Tab và Nút Điều Khiển
+        # BOTTOM PANEL: Thanh trạng thái
         # ---------------------------------------------------------------------
-        bottom_frame = tk.Frame(self.root, pady=5)
-        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+        self.status_var = tk.StringVar(value="Sẵn sàng. Vui lòng nhấn Run Search hoặc chơi thử bằng tay.")
+        self.lbl_status = tk.Label(
+            main_frame, textvariable=self.status_var,
+            bd=1, relief=SUNKEN, anchor=W,
+            font=("Helvetica", 9, "italic")
+        )
+        self.lbl_status.pack(side=BOTTOM, fill=X, padx=5, pady=(5, 0))
         
-        # 1. ttk.Notebook cho 4 thuật toán
-        self.notebook = ttk.Notebook(bottom_frame)
-        self.notebook.pack(side=tk.TOP, fill=tk.X, pady=5)
-        
-        # Tab BFS
-        self.tab_bfs = tk.Frame(self.notebook, padx=10, pady=10)
-        self.notebook.add(self.tab_bfs, text="BFS")
-        tk.Label(self.tab_bfs, text="Thuật toán Breadth-First Search. Không cần cấu hình thêm.").pack(anchor=tk.W)
-        
-        # Tab DFS
-        self.tab_dfs = tk.Frame(self.notebook, padx=10, pady=10)
-        self.notebook.add(self.tab_dfs, text="DFS")
-        tk.Label(self.tab_dfs, text="Depth Limit:").pack(side=tk.LEFT, padx=5)
-        self.entry_dfs_limit = tk.Entry(self.tab_dfs, width=8)
-        self.entry_dfs_limit.pack(side=tk.LEFT, padx=5)
-        self.entry_dfs_limit.insert(0, "20")
-        
-        # Tab IDS
-        self.tab_ids = tk.Frame(self.notebook, padx=10, pady=10)
-        self.notebook.add(self.tab_ids, text="IDS")
-        tk.Label(self.tab_ids, text="Max Depth:").pack(side=tk.LEFT, padx=5)
-        self.entry_ids_max = tk.Entry(self.tab_ids, width=8)
-        self.entry_ids_max.pack(side=tk.LEFT, padx=5)
-        self.entry_ids_max.insert(0, "20")
-        
-        # Tab UCS
-        self.tab_ucs = tk.Frame(self.notebook, padx=10, pady=10)
-        self.notebook.add(self.tab_ucs, text="UCS")
-        tk.Label(self.tab_ucs, text="Chế độ tính chi phí (Cost Mode):").pack(side=tk.LEFT, padx=5)
-        self.ucs_cost_mode_var = tk.IntVar(value=2)  # Mặc định moved tile cost
-        tk.Radiobutton(self.tab_ucs, text="1. Step cost = 1", variable=self.ucs_cost_mode_var, value=1).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(self.tab_ucs, text="2. Moved tile cost", variable=self.ucs_cost_mode_var, value=2).pack(side=tk.LEFT, padx=5)
-        
-        # Tab A*
-        self.tab_astar = tk.Frame(self.notebook, padx=10, pady=10)
-        self.notebook.add(self.tab_astar, text="A*")
-        
-        tk.Label(self.tab_astar, text="Heuristic:").pack(side=tk.LEFT, padx=5)
-        self.astar_heuristic_mode_var = tk.IntVar(value=1)  # Mặc định Manhattan
-        tk.Radiobutton(self.tab_astar, text="1. Manhattan", variable=self.astar_heuristic_mode_var, value=1).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(self.tab_astar, text="2. Misplaced Tiles", variable=self.astar_heuristic_mode_var, value=2).pack(side=tk.LEFT, padx=5)
-        
-        tk.Label(self.tab_astar, text="Cost Mode:").pack(side=tk.LEFT, padx=15)
-        self.astar_cost_mode_var = tk.IntVar(value=2)  # Mặc định moved tile cost
-        tk.Radiobutton(self.tab_astar, text="1. Step cost = 1", variable=self.astar_cost_mode_var, value=1).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(self.tab_astar, text="2. Moved tile cost", variable=self.astar_cost_mode_var, value=2).pack(side=tk.LEFT, padx=5)
-        
-        # 2. Khung nút bấm điều khiển
-        ctrl_frame = tk.Frame(bottom_frame)
-        ctrl_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
-        
-        self.btn_run = tk.Button(ctrl_frame, text="Run Search", font=("Helvetica", 10, "bold"), bg="#D9EAD3", fg="#274E13", width=12, command=self.click_run_search)
-        self.btn_run.pack(side=tk.LEFT, padx=3)
-        
-        self.btn_prev = tk.Button(ctrl_frame, text="Previous Step", width=12, command=self.click_prev_step)
-        self.btn_prev.pack(side=tk.LEFT, padx=3)
-        
-        self.btn_next = tk.Button(ctrl_frame, text="Next Step", width=12, command=self.click_next_step)
-        self.btn_next.pack(side=tk.LEFT, padx=3)
-        
-        self.btn_auto = tk.Button(ctrl_frame, text="Auto Play", bg="#CFE2F3", fg="#0B5394", width=12, command=self.click_auto_play)
-        self.btn_auto.pack(side=tk.LEFT, padx=3)
-        
-        self.btn_pause = tk.Button(ctrl_frame, text="Pause", bg="#FCE5CD", fg="#B45F06", width=12, command=self.click_pause)
-        self.btn_pause.pack(side=tk.LEFT, padx=3)
-        
-        self.btn_reset = tk.Button(ctrl_frame, text="Reset", width=12, command=self.click_reset)
-        self.btn_reset.pack(side=tk.LEFT, padx=3)
-        
-        self.btn_clear = tk.Button(ctrl_frame, text="Clear Log", width=12, command=self.click_clear_log)
-        self.btn_clear.pack(side=tk.LEFT, padx=3)
-        
-        # Trạng thái ban đầu: Vô hiệu các nút điều khiển bước khi chưa tìm kiếm
+        # Cập nhật trạng thái nút
         self.update_control_states()
         
-        # 3. Thanh trạng thái dưới cùng
-        self.status_var = tk.StringVar(value="Sẵn sàng. Vui lòng nhấn Run Search để thực thi tìm kiếm.")
-        self.lbl_status = tk.Label(bottom_frame, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W, font=("Helvetica", 9, "italic"))
-        self.lbl_status.pack(side=tk.BOTTOM, fill=tk.X, pady=2)
+    def on_algo_change(self, event=None):
+        """Thay đổi động các widget tuỳ chỉnh tham số thuật toán."""
+        algo = self.algo_combo.get()
         
-    # =============================================================================
-    # XỬ LÝ HÀNH VI CỦA NÚT BẤM
-    # =============================================================================
-    
+        for child in self.options_frame.winfo_children():
+            child.destroy()
+            
+        if algo == "DFS":
+            tb.Label(self.options_frame, text="Giới hạn Độ sâu (Limit):").pack(side=LEFT, padx=5)
+            self.entry_dfs_limit = tb.Entry(self.options_frame, width=8)
+            self.entry_dfs_limit.pack(side=LEFT, padx=5)
+            self.entry_dfs_limit.insert(0, "20")
+        elif algo == "IDS":
+            tb.Label(self.options_frame, text="Độ sâu tối đa (Max Depth):").pack(side=LEFT, padx=5)
+            self.entry_ids_max = tb.Entry(self.options_frame, width=8)
+            self.entry_ids_max.pack(side=LEFT, padx=5)
+            self.entry_ids_max.insert(0, "20")
+        elif algo == "UCS":
+            tb.Label(self.options_frame, text="Tính chi phí (Cost):").pack(side=LEFT, padx=5)
+            self.ucs_cost_mode_var = tk.IntVar(value=2)
+            tb.Radiobutton(self.options_frame, text="Step cost = 1", variable=self.ucs_cost_mode_var, value=1).pack(side=LEFT, padx=5)
+            tb.Radiobutton(self.options_frame, text="Moved tile cost", variable=self.ucs_cost_mode_var, value=2).pack(side=LEFT, padx=5)
+        elif algo == "A*":
+            tb.Label(self.options_frame, text="Heuristic:").pack(side=LEFT, padx=5)
+            self.astar_heuristic_mode_var = tk.IntVar(value=1)
+            tb.Radiobutton(self.options_frame, text="Manhattan", variable=self.astar_heuristic_mode_var, value=1).pack(side=LEFT, padx=5)
+            tb.Radiobutton(self.options_frame, text="Misplaced", variable=self.astar_heuristic_mode_var, value=2).pack(side=LEFT, padx=5)
+            
+            tb.Label(self.options_frame, text="Chi phí:").pack(side=LEFT, padx=15)
+            self.astar_cost_mode_var = tk.IntVar(value=2)
+            tb.Radiobutton(self.options_frame, text="Step = 1", variable=self.astar_cost_mode_var, value=1).pack(side=LEFT, padx=5)
+            tb.Radiobutton(self.options_frame, text="Moved tile", variable=self.astar_cost_mode_var, value=2).pack(side=LEFT, padx=5)
+        elif algo in ("Simple Hill Climbing", "Steepest Ascent Hill Climbing", "Stochastic Hill Climbing", "Random Restart Hill Climbing"):
+            tb.Label(self.options_frame, text="Heuristic:").pack(side=LEFT, padx=5)
+            self.hill_heuristic_mode_var = tk.IntVar(value=1)
+            tb.Radiobutton(self.options_frame, text="Manhattan", variable=self.hill_heuristic_mode_var, value=1).pack(side=LEFT, padx=5)
+            tb.Radiobutton(self.options_frame, text="Misplaced", variable=self.hill_heuristic_mode_var, value=2).pack(side=LEFT, padx=5)
+            
+            tb.Label(self.options_frame, text="Max Iterations:").pack(side=LEFT, padx=15)
+            self.hill_max_iter_entry = tb.Entry(self.options_frame, width=6)
+            self.hill_max_iter_entry.pack(side=LEFT, padx=5)
+            self.hill_max_iter_entry.insert(0, "100")
+            
+            if algo == "Random Restart Hill Climbing":
+                tb.Label(self.options_frame, text="Restarts:").pack(side=LEFT, padx=15)
+                self.hill_restart_entry = tb.Entry(self.options_frame, width=6)
+                self.hill_restart_entry.pack(side=LEFT, padx=5)
+                self.hill_restart_entry.insert(0, "5")
+        elif algo == "Local Beam Search":
+            tb.Label(self.options_frame, text="Beam Width k:").pack(side=LEFT, padx=5)
+            self.beam_width_entry = tb.Entry(self.options_frame, width=6)
+            self.beam_width_entry.pack(side=LEFT, padx=5)
+            self.beam_width_entry.insert(0, "3")
+            
+            tb.Label(self.options_frame, text="Heuristic:").pack(side=LEFT, padx=15)
+            self.lbs_heuristic_mode_var = tk.IntVar(value=1)
+            tb.Radiobutton(self.options_frame, text="Manhattan", variable=self.lbs_heuristic_mode_var, value=1).pack(side=LEFT, padx=5)
+            tb.Radiobutton(self.options_frame, text="Misplaced", variable=self.lbs_heuristic_mode_var, value=2).pack(side=LEFT, padx=5)
+        else:
+            tb.Label(self.options_frame, text="Thuật toán chạy với cấu hình mặc định.", font=("Helvetica", 9, "italic")).pack(side=LEFT, padx=5)
+            
     def load_example_state(self):
         """Khôi phục trạng thái Start & Goal ví dụ mặc định."""
         self.entry_start.delete(0, tk.END)
@@ -940,57 +2093,77 @@ class SearchVisualizerApp:
         self.entry_goal.delete(0, tk.END)
         self.entry_goal.insert(0, "1 2 3 4 5 6 7 8 0")
         
-        # Hiển thị bàn cờ start lên 3x3
+        self.current_board_state = self.default_start
         self.draw_custom_board(self.default_start)
         self.click_clear_log()
         self.status_var.set("Đã tải trạng thái mặc định của ví dụ.")
         
     def draw_custom_board(self, state):
-        """Vẽ trạng thái state lên bàn cờ hiển thị 3x3 ở cột trái."""
+        """Vẽ trạng thái state lên bàn cờ hiển thị 3x3 ở cột trái, highlight đúng/sai."""
+        goal = parse_state(self.entry_goal.get())
         for r in range(3):
             for c in range(3):
                 val = state[r*3 + c]
                 if val == 0:
-                    self.tiles[r][c].config(text="", bg="#D0D0D0")
+                    self.tiles[r][c].config(text="", bg="#3A3F44")  # Ô trống có màu nền sẫm hơn
                 else:
-                    self.tiles[r][c].config(text=str(val), bg="#FFFFFF")
+                    # Highlight màu xanh lá nếu ô nằm đúng vị trí đích, ngược lại màu xanh dương
+                    is_correct = goal and (goal[r*3 + c] == val)
+                    if is_correct:
+                        bg_color = "#00BC8C"  # Thành công - Green
+                        fg_color = "#FFFFFF"
+                    else:
+                        bg_color = "#375A7F"  # Thông thường - Blue
+                        fg_color = "#FFFFFF"
+                    self.tiles[r][c].config(text=str(val), bg=bg_color, fg=fg_color)
                     
     def click_clear_log(self):
         """Xoá toàn bộ log và các bước chạy hiện tại."""
         self.auto_playing = False
         self.steps = []
+        self.search_steps = []
+        self.solution_steps = []
+        self.view_mode_var.set("search")
         self.current_step_idx = -1
         self.result = None
         
-        self.text_log.config(state=tk.NORMAL)
+        self.text_log.config(state=NORMAL)
         self.text_log.delete("1.0", tk.END)
-        self.text_log.config(state=tk.DISABLED)
+        self.text_log.config(state=DISABLED)
+        
+        self.step_slider.config(from_=0, to=0)
+        self.step_slider.set(0)
         
         # Cập nhật lại bàn cờ theo Start State hiện tại
         start_state = parse_state(self.entry_start.get())
         if start_state and len(start_state) == 9:
+            self.current_board_state = start_state
             self.draw_custom_board(start_state)
             
         self.update_control_states()
         self.status_var.set("Đã xoá sạch log. Trạng thái sẵn sàng.")
         
     def update_control_states(self):
-        """Bật/tắt các nút điều khiển tùy thuộc vào việc đã chạy thuật toán thành công chưa."""
+        """Bật/tắt các nút điều khiển tùy thuộc vào việc đã chạy thuật toán chưa."""
         has_steps = len(self.steps) > 0
-        state = tk.NORMAL if has_steps else tk.DISABLED
+        state = NORMAL if has_steps else DISABLED
         
         self.btn_prev.config(state=state)
         self.btn_next.config(state=state)
         self.btn_auto.config(state=state)
         self.btn_pause.config(state=state)
         self.btn_reset.config(state=state)
-
+        self.step_slider.config(state=state)
+        
+        has_result = self.result is not None
+        radio_state = NORMAL if has_result else DISABLED
+        self.rad_search_mode.config(state=radio_state)
+        self.rad_solution_mode.config(state=radio_state)
+        
     def click_run_search(self):
-        """Thực thi chạy thuật toán tìm kiếm khi click Run Search."""
-        # Dừng tự động phát nếu có
+        """Thực thi chạy thuật toán tìm kiếm trên một Thread riêng."""
         self.auto_playing = False
         
-        # 1. Thu thập dữ liệu và chuyển đổi
         start_txt = self.entry_start.get()
         goal_txt = self.entry_goal.get()
         
@@ -998,10 +2171,9 @@ class SearchVisualizerApp:
         goal = parse_state(goal_txt)
         
         if start is None or goal is None:
-            messagebox.showwarning("Lỗi định dạng", "Trạng thái nhập không hợp lệ. Vui lòng nhập 9 số cách nhau bằng khoảng trắng.")
+            messagebox.showwarning("Lỗi định dạng", "Trạng thái nhập không hợp lệ. Vui lòng nhập 9 số từ 0 đến 8.")
             return
             
-        # 2. Kiểm tra tính hợp lệ
         ok, msg = validate_state(start)
         if not ok:
             messagebox.showwarning("Lỗi Start State", f"Start State không hợp lệ: {msg}")
@@ -1012,66 +2184,172 @@ class SearchVisualizerApp:
             messagebox.showwarning("Lỗi Goal State", f"Goal State không hợp lệ: {msg}")
             return
             
-        # 3. Kiểm tra tính giải được
         if not is_solvable(start, goal):
-            messagebox.showerror("Không thể giải", "This puzzle is not solvable.\nHai trạng thái có tính chẵn lẻ của số lượng cặp nghịch thế không khớp nhau.")
-            self.status_var.set("This puzzle is not solvable.")
+            messagebox.showerror("Không thể giải", "Câu đố này không thể giải được!\nHai trạng thái có tính chẵn lẻ của số lượng cặp nghịch thế không khớp nhau.")
+            self.status_var.set("Bài toán không thể giải (Not solvable).")
             self.click_clear_log()
             return
             
-        # 4. Xác định thuật toán từ Tab đang được chọn
-        tab_idx = self.notebook.index(self.notebook.select())
+        # Reset game chơi thủ công
+        self.manual_moves = 0
+        self.lbl_manual_status.config(text="Số bước đi bằng tay: 0")
         
-        self.status_var.set("Đang chạy tìm kiếm...")
+        # Bắt đầu chạy tìm kiếm ngầm
+        self.btn_run.config(state=DISABLED)
+        self.status_var.set("Đang chạy tìm kiếm trên luồng phụ...")
         self.root.update()
         
+        algo = self.algo_combo.get()
+        
+        params = {}
+        if algo == "DFS":
+            try:
+                params['depth_limit'] = int(self.entry_dfs_limit.get())
+            except ValueError:
+                params['depth_limit'] = 20
+        elif algo == "IDS":
+            try:
+                params['max_depth'] = int(self.entry_ids_max.get())
+            except ValueError:
+                params['max_depth'] = 20
+        elif algo == "UCS":
+            params['cost_mode'] = self.ucs_cost_mode_var.get()
+        elif algo == "A*":
+            params['cost_mode'] = self.astar_cost_mode_var.get()
+            params['heuristic_mode'] = self.astar_heuristic_mode_var.get()
+        elif algo in ("Simple Hill Climbing", "Steepest Ascent Hill Climbing", "Stochastic Hill Climbing", "Random Restart Hill Climbing"):
+            params['heuristic_mode'] = self.hill_heuristic_mode_var.get()
+            try:
+                params['max_iterations'] = max(1, int(self.hill_max_iter_entry.get()))
+            except Exception:
+                params['max_iterations'] = 100
+            if algo == "Random Restart Hill Climbing":
+                try:
+                    params['restarts'] = max(1, int(self.hill_restart_entry.get()))
+                except Exception:
+                    params['restarts'] = 5
+        elif algo == "Local Beam Search":
+            try:
+                params['beam_width'] = max(1, int(self.beam_width_entry.get()))
+            except Exception:
+                params['beam_width'] = 3
+            params['heuristic_mode'] = self.lbs_heuristic_mode_var.get()
+            params['max_iterations'] = 100
+            
+        # Chạy thuật toán trong Thread phụ
+        threading.Thread(target=self.run_search_worker, args=(algo, start, goal, params), daemon=True).start()
+        
+    def run_search_worker(self, algo, start, goal, params):
         start_time = time.perf_counter()
         
-        if tab_idx == 0:  # BFS
+        if algo == "BFS":
             result = run_bfs(start, goal)
-        elif tab_idx == 1:  # DFS
-            # Đọc depth limit
-            try:
-                limit = int(self.entry_dfs_limit.get())
-            except ValueError:
-                limit = 20
-                self.entry_dfs_limit.delete(0, tk.END)
-                self.entry_dfs_limit.insert(0, "20")
-            result = run_dfs(start, goal, depth_limit=limit)
-        elif tab_idx == 2:  # IDS
-            # Đọc max depth
-            try:
-                max_d = int(self.entry_ids_max.get())
-            except ValueError:
-                max_d = 20
-                self.entry_ids_max.delete(0, tk.END)
-                self.entry_ids_max.insert(0, "20")
-            result = run_ids(start, goal, max_depth=max_d)
-        elif tab_idx == 3:  # UCS
-            cost_mode = self.ucs_cost_mode_var.get()
-            result = run_ucs(start, goal, cost_mode=cost_mode)
-        else:  # A*
-            cost_mode = self.astar_cost_mode_var.get()
-            heuristic_mode = self.astar_heuristic_mode_var.get()
-            result = run_astar(start, goal, cost_mode=cost_mode, heuristic_mode=heuristic_mode)
+        elif algo == "DFS":
+            result = run_dfs(start, goal, depth_limit=params['depth_limit'])
+        elif algo == "IDS":
+            result = run_ids(start, goal, max_depth=params['max_depth'])
+        elif algo == "UCS":
+            result = run_ucs(start, goal, cost_mode=params['cost_mode'])
+        elif algo == "A*":
+            result = run_astar(start, goal, cost_mode=params['cost_mode'], heuristic_mode=params['heuristic_mode'])
+        elif algo == "Simple Hill Climbing":
+            result = run_simple_hill_climbing(start, goal, heuristic_mode=params['heuristic_mode'], max_iterations=params['max_iterations'])
+        elif algo == "Steepest Ascent Hill Climbing":
+            result = run_steepest_ascent_hill_climbing(start, goal, heuristic_mode=params['heuristic_mode'], max_iterations=params['max_iterations'])
+        elif algo == "Stochastic Hill Climbing":
+            result = run_stochastic_hill_climbing(start, goal, heuristic_mode=params['heuristic_mode'], max_iterations=params['max_iterations'])
+        elif algo == "Random Restart Hill Climbing":
+            result = run_random_restart_hill_climbing(
+                start, goal,
+                heuristic_mode=params['heuristic_mode'],
+                max_iterations=params['max_iterations'],
+                restarts=params.get('restarts', 5)
+            )
+        elif algo == "Local Beam Search":
+            result = run_local_beam_search(
+                start, goal,
+                beam_width=params.get('beam_width', 3),
+                max_iterations=params.get('max_iterations', 100),
+                heuristic_mode=params.get('heuristic_mode', 1)
+            )
+        else:
+            result = run_simple_hill_climbing(start, goal)
             
         end_time = time.perf_counter()
         result.time_taken = end_time - start_time
         
-        # 5. Lưu kết quả
+        # Trả kết quả về luồng UI chính
+        self.root.after(0, lambda: self.search_finished(result))
+        
+    def search_finished(self, result):
+        self.btn_run.config(state=NORMAL)
         self.result = result
-        self.steps = result.steps
+        
+        # Lưu các bước tìm kiếm và đường đi lời giải
+        self.search_steps = result.steps
+        self.solution_steps = []
+        if result.success and result.solution_path:
+            for idx, node in enumerate(result.solution_path):
+                step = SearchStep(
+                    step=idx,
+                    current_node=node,
+                    frontier=[],
+                    explored=[],
+                    generated_children=[],
+                    note=f"Bước {idx}/{result.total_steps}: Di chuyển '{node.move}'" if node.move else "Trạng thái xuất phát (Start)"
+                )
+                self.solution_steps.append(step)
+                
+        # Thiết lập các bước hiển thị dựa trên chế độ xem được chọn
+        if self.view_mode_var.get() == "solution" and result.success:
+            self.steps = self.solution_steps
+        else:
+            self.view_mode_var.set("search")
+            self.steps = self.search_steps
+            
         self.current_step_idx = 0
         
-        # 6. Cập nhật giao diện
+        start_state = parse_state(self.entry_start.get())
+        if start_state:
+            self.current_board_state = start_state
+            
         self.update_control_states()
-        self.show_current_step()
         
+        if self.steps:
+            self.step_slider.config(from_=0, to=len(self.steps) - 1)
+            self.step_slider.set(0)
+            self.show_current_step()
+            
         if result.success:
             self.status_var.set(f"Đã tìm thấy Goal! Tổng số bước di chuyển: {result.total_steps}. Tổng cost: {result.total_cost}. Kích thước Frontier max: {result.max_frontier_size}")
         else:
             self.status_var.set(f"Tìm kiếm thất bại: {result.message}")
             
+    def toggle_view_mode(self):
+        """Chuyển đổi giữa chế độ xem tiến trình tìm kiếm và xem đường đi lời giải."""
+        if not self.result:
+            return
+            
+        mode = self.view_mode_var.get()
+        if mode == "solution":
+            if not self.result.success:
+                messagebox.showwarning("Không có lời giải", "Tìm kiếm thất bại nên không có đường đi lời giải.")
+                self.view_mode_var.set("search")
+                return
+            self.steps = self.solution_steps
+        else:
+            self.steps = self.search_steps
+            
+        self.current_step_idx = 0
+        self.auto_playing = False
+        
+        if self.steps:
+            self.step_slider.config(from_=0, to=len(self.steps) - 1)
+            self.step_slider.set(0)
+            self.current_board_state = self.steps[0].current_node.state
+            self.show_current_step()
+        self.update_control_states()
+
     def show_current_step(self):
         """Hiển thị bước hiện tại lên bàn cờ và Text log bên phải."""
         if not self.steps or self.current_step_idx < 0:
@@ -1079,10 +2357,74 @@ class SearchVisualizerApp:
             
         step = self.steps[self.current_step_idx]
         
-        # 1. Vẽ lại bàn cờ hiện tại của bước
+        # Vẽ lại bàn cờ của bước này
         self.draw_custom_board(step.current_node.state)
         
-        # 2. Xây dựng chuỗi văn bản log cho bước hiện tại
+        # Nếu đang ở chế độ xem lời giải (solution path)
+        if self.view_mode_var.get() == "solution":
+            log_lines = []
+            note_str = f" ({step.note})" if step.note else ""
+            
+            log_lines.append("==================================================")
+            log_lines.append(f"BƯỚC LỜI GIẢI {step.step}{note_str}")
+            log_lines.append("==================================================")
+            log_lines.append("")
+            
+            log_lines.append("TRẠNG THÁI BÀN CỜ:")
+            log_lines.append(format_state_matrix(step.current_node.state))
+            log_lines.append("")
+
+            if self.current_step_idx > 0:
+                prev_state = self.result.solution_path[self.current_step_idx - 1].state
+                log_lines.append("BẢNG TRƯỚC:")
+                log_lines.append(format_state_matrix(prev_state))
+                log_lines.append("")
+
+            if self.current_step_idx < len(self.result.solution_path) - 1:
+                next_state = self.result.solution_path[self.current_step_idx + 1].state
+                log_lines.append("BẢNG TIẾP THEO:")
+                log_lines.append(format_state_matrix(next_state))
+                log_lines.append("")
+            
+            # Show path of moves so far
+            path_so_far = self.result.solution_path[:self.current_step_idx + 1]
+            moves_so_far = [n.move for n in path_so_far if n.move is not None]
+            log_lines.append("CÁC BƯỚC DI CHUYỂN ĐÃ QUA:")
+            if not moves_so_far:
+                log_lines.append("Bắt đầu")
+            else:
+                log_lines.append(" -> ".join(moves_so_far))
+            log_lines.append("")
+            
+            # Show remaining moves
+            remaining_path = self.result.solution_path[self.current_step_idx + 1:]
+            remaining_moves = [n.move for n in remaining_path if n.move is not None]
+            log_lines.append("CÁC BƯỚC DI CHUYỂN TIẾP THEO:")
+            if not remaining_moves:
+                log_lines.append("Đã đạt trạng thái đích!")
+            else:
+                log_lines.append(" -> ".join(remaining_moves))
+            log_lines.append("")
+            
+            # Nếu là bước cuối cùng
+            is_last_step = (self.current_step_idx == len(self.steps) - 1)
+            if is_last_step:
+                log_lines.append("==================================================")
+                log_lines.append("KẾT QUẢ CHUNG CUỘC:")
+                log_lines.append(f"Thuật toán: {self.result.algorithm}")
+                log_lines.append(f"Tổng số bước di chuyển: {self.result.total_steps}")
+                log_lines.append(f"Tổng chi phí (g): {self.result.total_cost}")
+                log_lines.append(f"Thời gian tính toán: {self.result.time_taken:.5f} giây")
+                log_lines.append("==================================================")
+                
+            self.text_log.config(state=NORMAL)
+            self.text_log.delete("1.0", tk.END)
+            self.text_log.insert(tk.END, "\n".join(log_lines))
+            self.text_log.config(state=DISABLED)
+            self.text_log.see("1.0")
+            return
+
+        # Nếu ở chế độ duyệt cây tìm kiếm (search tree mode)
         log_lines = []
         note_str = f" ({step.note})" if step.note else ""
         
@@ -1099,7 +2441,6 @@ class SearchVisualizerApp:
         if not step.frontier:
             log_lines.append("(empty)")
         else:
-            # Sắp xếp các node theo ma trận 3x3
             if len(step.frontier) <= 10:
                 for node in step.frontier:
                     log_lines.append(format_node_matrix(node))
@@ -1135,8 +2476,7 @@ class SearchVisualizerApp:
                     log_lines.append(format_explored_matrix(node))
                     log_lines.append("")
                     
-        # 3. Nếu node hiện tại chính là đích và là bước cuối, in RESULT
-        # Kiểm tra xem đây có phải là bước tìm kiếm cuối cùng và thành công không
+        # Nếu node hiện tại chính là đích và là bước cuối, in RESULT
         is_last_step = (self.current_step_idx == len(self.steps) - 1)
         if is_last_step and self.result.success:
             log_lines.append("==================================================")
@@ -1155,20 +2495,22 @@ class SearchVisualizerApp:
             log_lines.append("==================================================")
             
         # Cập nhật Text widget
-        self.text_log.config(state=tk.NORMAL)
+        self.text_log.config(state=NORMAL)
         self.text_log.delete("1.0", tk.END)
         self.text_log.insert(tk.END, "\n".join(log_lines))
-        self.text_log.config(state=tk.DISABLED)
+        self.text_log.config(state=DISABLED)
         
-        # Tự động scroll về đầu log của bước
+        # Tự động cuộn lên đầu
         self.text_log.see("1.0")
-
+        
     def click_next_step(self):
         """Chuyển sang bước tiếp theo."""
         if not self.steps:
             return
         if self.current_step_idx < len(self.steps) - 1:
             self.current_step_idx += 1
+            self.step_slider.set(self.current_step_idx)
+            self.current_board_state = self.steps[self.current_step_idx].current_node.state
             self.show_current_step()
         else:
             self.auto_playing = False
@@ -1180,51 +2522,257 @@ class SearchVisualizerApp:
             return
         if self.current_step_idx > 0:
             self.current_step_idx -= 1
+            self.step_slider.set(self.current_step_idx)
+            self.current_board_state = self.steps[self.current_step_idx].current_node.state
             self.show_current_step()
             
     def click_reset(self):
-        """Quay lại bước 0."""
+        """Quay lại bước đầu tiên (bước 0)."""
         if not self.steps:
             return
         self.auto_playing = False
         self.current_step_idx = 0
+        self.step_slider.set(0)
+        self.current_board_state = self.steps[0].current_node.state
         self.show_current_step()
         
     def click_auto_play(self):
-        """Tự động chạy liên tiếp các bước."""
+        """Tự động phát liên tiếp các bước tìm kiếm."""
         if not self.steps:
             return
         if self.current_step_idx == len(self.steps) - 1:
             self.current_step_idx = 0
+            self.step_slider.set(0)
             
         self.auto_playing = True
         self.run_auto_step_loop()
         
     def run_auto_step_loop(self):
-        """Vòng lặp không bị block sử dụng root.after()."""
         if not self.auto_playing:
             return
             
         if self.current_step_idx < len(self.steps) - 1:
             self.current_step_idx += 1
+            self.step_slider.set(self.current_step_idx)
+            self.current_board_state = self.steps[self.current_step_idx].current_node.state
             self.show_current_step()
-            # Đợi 700ms (0.7s) rồi thực thi tiếp
-            self.root.after(700, self.run_auto_step_loop)
+            self.root.after(self.play_speed, self.run_auto_step_loop)
         else:
             self.auto_playing = False
-            self.status_var.set("Hoàn tất tự động phát các bước.")
+            self.status_var.set("Hoàn tất tự động phát.")
             
     def click_pause(self):
         """Tạm dừng quá trình tự động phát."""
         self.auto_playing = False
         self.status_var.set("Tạm dừng tự động phát.")
+        
+    def slide_step(self, val):
+        """Xử lý sự kiện kéo thanh trượt tiến trình bước."""
+        if not self.steps:
+            return
+        idx = int(float(val))
+        if 0 <= idx < len(self.steps):
+            self.current_step_idx = idx
+            self.current_board_state = self.steps[idx].current_node.state
+            self.show_current_step()
+            
+    def change_speed(self, val):
+        """Thay đổi tốc độ tự động phát từ thanh trượt."""
+        self.play_speed = int(float(val))
+        self.lbl_speed_val.config(text=f"{self.play_speed}ms")
+        
+    def change_theme(self, event=None):
+        """Thay đổi giao diện màu sắc của ứng dụng thông qua Combobox."""
+        new_theme = self.theme_combo.get()
+        tb.Style().theme_use(new_theme)
+        # Vẽ lại bàn cờ để cập nhật màu sắc
+        self.draw_custom_board(self.current_board_state)
+        
+    def generate_board(self, difficulty):
+        """Tự động sinh và nạp bàn cờ ngẫu nhiên có lời giải."""
+        self.auto_playing = False
+        state = generate_random_puzzle(difficulty)
+        
+        self.entry_start.delete(0, tk.END)
+        self.entry_start.insert(0, " ".join(str(x) for x in state))
+        
+        self.current_board_state = state
+        self.draw_custom_board(state)
+        self.reset_manual_play()
+        
+        self.steps = []
+        self.current_step_idx = -1
+        self.result = None
+        self.update_control_states()
+        self.status_var.set(f"Đã sinh cấu hình 8-Puzzle mới ({difficulty}).")
+        
+    def reset_manual_play(self):
+        """Khôi phục đếm bước chơi thủ công."""
+        self.manual_moves = 0
+        self.lbl_manual_status.config(text="Số bước đi bằng tay: 0")
+        
+        start_state = parse_state(self.entry_start.get())
+        if start_state and len(start_state) == 9:
+            self.current_board_state = start_state
+            self.draw_custom_board(start_state)
+            
+    def click_tile(self, r, c):
+        """Xử lý trượt ô số khi người dùng chơi thủ công."""
+        if self.auto_playing:
+            return
+            
+        blank_idx = self.current_board_state.index(0)
+        blank_r, blank_c = blank_idx // 3, blank_idx % 3
+        
+        # Kiểm tra ô được click có liền kề ô trống không
+        if (abs(r - blank_r) == 1 and c == blank_c) or (r == blank_r and abs(c - blank_c) == 1):
+            clicked_idx = r * 3 + c
+            lst = list(self.current_board_state)
+            lst[blank_idx], lst[clicked_idx] = lst[clicked_idx], lst[blank_idx]
+            self.current_board_state = tuple(lst)
+            
+            self.manual_moves += 1
+            self.lbl_manual_status.config(text=f"Số bước đi bằng tay: {self.manual_moves}")
+            self.draw_custom_board(self.current_board_state)
+            
+            # Xoá trạng thái trực quan hóa tìm kiếm
+            self.steps = []
+            self.current_step_idx = -1
+            self.update_control_states()
+            
+            goal_state = parse_state(self.entry_goal.get())
+            if self.current_board_state == goal_state:
+                messagebox.showinfo("Chiến thắng!", f"Chúc mừng! Bạn đã tự giải thành công trong {self.manual_moves} bước!")
+                self.status_var.set(f"Đã giải xong bằng tay trong {self.manual_moves} bước.")
+                
+    def get_hint(self):
+        """Gợi ý bước đi tiếp theo bằng cách chạy thuật toán A* (Manhattan)."""
+        start = self.current_board_state
+        goal = parse_state(self.entry_goal.get())
+        
+        if start == goal:
+            messagebox.showinfo("Gợi Ý", "Trạng thái hiện tại đã khớp với trạng thái đích rồi!")
+            return
+            
+        self.status_var.set("Đang tìm gợi ý tối ưu...")
+        self.root.update()
+        
+        result = run_astar(start, goal, cost_mode=1, heuristic_mode=1)
+        if result.success and len(result.solution_path) > 1:
+            next_state = result.solution_path[1].state
+            blank_idx_next = next_state.index(0)
+            moved_val = start[blank_idx_next]
+            
+            r = blank_idx_next // 3
+            c = blank_idx_next % 3
+            
+            # Highlight ô cần di chuyển màu Cam (Orange)
+            self.tiles[r][c].config(bg="#E67E22", fg="#FFFFFF")
+            self.status_var.set(f"Gợi ý: Hãy di chuyển ô số {moved_val} (tô cam) vào ô trống.")
+        else:
+            messagebox.showwarning("Lỗi gợi ý", "Không tìm thấy lời giải để đưa ra gợi ý.")
+            self.status_var.set("Không thể tìm thấy gợi ý.")
+            
+    def click_compare_all(self):
+        """Khởi chạy tất cả thuật toán để so sánh hiệu năng trên Thread riêng."""
+        start_txt = self.entry_start.get()
+        goal_txt = self.entry_goal.get()
+        
+        start = parse_state(start_txt)
+        goal = parse_state(goal_txt)
+        
+        if start is None or goal is None:
+            messagebox.showwarning("Lỗi", "Vui lòng cấu hình trạng thái hợp lệ trước.")
+            return
+            
+        ok, msg = validate_state(start)
+        if not ok:
+            messagebox.showwarning("Lỗi", f"Start State không hợp lệ: {msg}")
+            return
+            
+        ok, msg = validate_state(goal)
+        if not ok:
+            messagebox.showwarning("Lỗi", f"Goal State không hợp lệ: {msg}")
+            return
+            
+        if not is_solvable(start, goal):
+            messagebox.showerror("Không thể giải", "Bài toán này không thể giải được!")
+            return
+            
+        self.btn_compare_all.config(state=DISABLED)
+        self.lbl_comp_status.config(text="Đang tính toán so sánh các thuật toán...")
+        self.root.update()
+        
+        # Xoá kết quả cũ trong bảng
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+            
+        threading.Thread(target=self.run_comparison_worker, args=(start, goal), daemon=True).start()
+        
+    def run_comparison_worker(self, start, goal):
+        results = []
+        
+        algos = [
+            ("BFS", lambda s, g: run_bfs(s, g)),
+            ("DFS (Limit=20)", lambda s, g: run_dfs(s, g, depth_limit=20)),
+            ("IDS (Max Depth=20)", lambda s, g: run_ids(s, g, max_depth=20)),
+            ("UCS (Cost Mode=2)", lambda s, g: run_ucs(s, g, cost_mode=2)),
+            ("A* (Manhattan, Cost=2)", lambda s, g: run_astar(s, g, cost_mode=2, heuristic_mode=1)),
+            ("A* (Misplaced, Cost=2)", lambda s, g: run_astar(s, g, cost_mode=2, heuristic_mode=2)),
+            ("Simple Hill Climbing", lambda s, g: run_simple_hill_climbing(s, g, heuristic_mode=1, max_iterations=100)),
+            ("Steepest Ascent Hill Climbing", lambda s, g: run_steepest_ascent_hill_climbing(s, g, heuristic_mode=1, max_iterations=100)),
+            ("Stochastic Hill Climbing", lambda s, g: run_stochastic_hill_climbing(s, g, heuristic_mode=1, max_iterations=100)),
+            ("Random Restart Hill Climbing", lambda s, g: run_random_restart_hill_climbing(s, g, heuristic_mode=1, max_iterations=100, restarts=5)),
+            ("Local Beam Search (k=3)", lambda s, g: run_local_beam_search(s, g, beam_width=3, max_iterations=100, heuristic_mode=1))
+        ]
+        
+        for name, func in algos:
+            self.root.after(0, lambda n=name: self.lbl_comp_status.config(text=f"Đang chạy {n}..."))
+            t0 = time.perf_counter()
+            try:
+                res = func(start, goal)
+            except Exception as e:
+                res = SearchResult(False, name, [], [], [], 0, 0, 0, 0, 0, 0.0, str(e))
+            t1 = time.perf_counter()
+            res.time_taken = t1 - t0
+            results.append((name, res))
+            
+        self.root.after(0, lambda: self.comparison_finished(results))
+        
+    def comparison_finished(self, results):
+        self.btn_compare_all.config(state=NORMAL)
+        self.lbl_comp_status.config(text="Đã hoàn thành so sánh!")
+        
+        for name, res in results:
+            success_str = "Thành công" if res.success else "Thất bại"
+            if res.success:
+                steps_str = str(res.total_steps)
+                cost_str = str(res.total_cost)
+            else:
+                steps_str = "-"
+                cost_str = "-"
+                
+            time_ms = f"{res.time_taken * 1000:.2f}"
+            
+            self.tree.insert("", END, values=(
+                name,
+                success_str,
+                steps_str,
+                cost_str,
+                f"{res.expanded_nodes:,}",
+                f"{res.generated_nodes:,}",
+                time_ms
+            ))
+
 
 # =============================================================================
 # KHỞI CHẠY CHƯƠNG TRÌNH
 # =============================================================================
 
 def main():
-    root = tk.Tk()
+    root = tb.Window(themename="darkly", title="8-Puzzle Search Visualizer (Upgraded UI)")
+    root.geometry("1100x800")
+    root.minsize(1000, 750)
     app = SearchVisualizerApp(root)
     root.mainloop()
 
