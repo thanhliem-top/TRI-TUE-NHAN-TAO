@@ -14,6 +14,40 @@ from ttkbootstrap.constants import *
 # Giới hạn số lượng node sinh ra tối đa để tránh treo máy
 MAX_NODES = 50000
 
+STANDARD_SEARCH_ALGORITHMS = [
+    "BFS",
+    "DFS",
+    "IDS",
+    "UCS",
+    "A*",
+    "Simple Hill Climbing",
+    "Steepest Ascent Hill Climbing",
+    "Stochastic Hill Climbing",
+    "Random Restart Hill Climbing",
+    "Local Beam Search",
+]
+
+CSP_ALGORITHMS = [
+    "CSP: Path Consistency",
+    "CSP: Global Constraints",
+    "CSP: Backtracking Search",
+    "CSP: Forward Checking",
+    "CSP: AC-3",
+    "CSP: Min-Conflicts",
+]
+
+COMPLEX_ENV_ALGORITHMS = [
+    "Complex Env: AND-OR Search",
+    "Complex Env: No Observation",
+    "Complex Env: Partial Observation",
+]
+
+ALGORITHM_CHOICES = (
+    STANDARD_SEARCH_ALGORITHMS
+    + CSP_ALGORITHMS
+    + COMPLEX_ENV_ALGORITHMS
+)
+
 # =============================================================================
 # CẤU TRÚC DỮ LIỆU CHÍNH & THUẬT TOÁN (TƯƠNG TỰ BẢN CONSOLE)
 # =============================================================================
@@ -1685,6 +1719,544 @@ def format_state_matrix(state):
         rows.append(f"{state[i]} {state[i+1]} {state[i+2]}")
     return "\n".join(rows)
 
+
+# =============================================================================
+# CSP & COMPLEX ENVIRONMENT ALGORITHMS APPLIED TO 8-PUZZLE
+# =============================================================================
+
+def reconstruct_path(node):
+    path = []
+    curr = node
+    while curr:
+        path.append(curr)
+        curr = curr.parent
+    path.reverse()
+    return path
+
+
+def run_csp_backtracking_puzzle(start, goal, forward_checking=False, depth_limit=10,
+                                move_order=('L', 'R', 'U', 'D')):
+    """CSP Backtracking / Forward Checking cho 8-puzzle."""
+    name_gen = NodeNameGenerator()
+    root = SearchNode(state=start, parent=None, parent_id=None, move=None,
+                      depth=0, cost=0, node_id=name_gen.get_or_create(start), gen_order=0)
+
+    steps = []
+    explored = []
+    node_counter = [1]
+    max_fs = 0
+    goal_pos = {v: i for i, v in enumerate(goal)}
+
+    def h(state):
+        d = 0
+        for i, v in enumerate(state):
+            if v:
+                gr, gc = goal_pos[v] // 3, goal_pos[v] % 3
+                d += abs(i // 3 - gr) + abs(i % 3 - gc)
+        return d
+
+    def bt(path_nodes, depth):
+        nonlocal max_fs
+        cur = path_nodes[-1]
+        explored.append(cur)
+        if cur.state == goal:
+            steps.append(SearchStep(len(steps), cur, [], list(explored), [], "Goal reached!"))
+            return cur
+        if depth >= depth_limit:
+            return None
+        raw = get_neighbors(cur.state, move_order)
+        cands = [(m, s) for m, s, _ in raw if not any(n.state == s for n in path_nodes)]
+        if forward_checking:
+            rem = depth_limit - depth - 1
+            cands = [(m, s) for m, s in cands if h(s) <= rem]
+        max_fs = max(max_fs, len(cands))
+        children = []
+        for move, ns in cands:
+            cn = SearchNode(state=ns, parent=cur, parent_id=cur.id, move=move,
+                            depth=depth+1, cost=depth+1,
+                            node_id=name_gen.get_or_create(ns), gen_order=node_counter[0])
+            node_counter[0] += 1
+            children.append(cn)
+        steps.append(SearchStep(len(steps), cur, children, list(explored), children,
+                                f"depth={depth}, {len(cands)} branches"))
+        for cn in children:
+            r = bt(path_nodes + [cn], depth + 1)
+            if r:
+                return r
+        return None
+
+    sol = bt([root], 0)
+    algo = "CSP: Forward Checking" if forward_checking else "CSP: Backtracking"
+    if sol:
+        path = reconstruct_path(sol)
+        moves = [n.move for n in path if n.move]
+        return SearchResult(True, algo, steps, path, moves, len(moves), len(moves),
+                            len(explored), name_gen.count, max_fs, 0.0)
+    return SearchResult(False, algo, steps, [], [], 0, 0,
+                        len(explored), name_gen.count, max_fs, 0.0,
+                        f"No solution within depth {depth_limit}.")
+
+
+def run_csp_path_consistency_puzzle(start, goal, depth_limit=20, move_order=('L', 'R', 'U', 'D')):
+    """Path consistency cho 8-puzzle: moi cap trang thai lien tiep phai hop le va duong di khong lap."""
+    name_gen = NodeNameGenerator()
+    goal_pos = {v: i for i, v in enumerate(goal)}
+
+    def h(state):
+        return sum(
+            abs(i // 3 - goal_pos[v] // 3) + abs(i % 3 - goal_pos[v] % 3)
+            for i, v in enumerate(state) if v != 0
+        )
+
+    root = SearchNode(state=start, parent=None, parent_id=None, move=None,
+                      depth=0, cost=0, node_id=name_gen.get_or_create(start),
+                      gen_order=0, h=h(start), f=h(start))
+    frontier = [root]
+    explored = []
+    steps = []
+    generated = 1
+    max_frontier = 1
+
+    while frontier:
+        max_frontier = max(max_frontier, len(frontier))
+        current = frontier.pop()
+        explored.append(current)
+        if current.state == goal:
+            path = reconstruct_path(current)
+            moves = [n.move for n in path if n.move]
+            steps.append(SearchStep(len(steps), current, list(frontier), list(explored), [], "Path consistent goal."))
+            return SearchResult(True, "CSP: Path Consistency", steps, path, moves,
+                                len(moves), len(moves), len(explored), name_gen.count,
+                                max_frontier, 0.0)
+        if current.depth >= depth_limit:
+            continue
+
+        path_states = set()
+        p = current
+        while p:
+            path_states.add(p.state)
+            p = p.parent
+
+        children = []
+        remaining = depth_limit - current.depth - 1
+        for move, next_state, _ in get_neighbors(current.state, move_order):
+            if next_state in path_states:
+                continue
+            if h(next_state) > remaining + h(goal):
+                continue
+            child_h = h(next_state)
+            child = SearchNode(state=next_state, parent=current, parent_id=current.id,
+                               move=move, depth=current.depth + 1, cost=current.cost + 1,
+                               node_id=name_gen.get_or_create(next_state),
+                               gen_order=generated, h=child_h,
+                               f=current.cost + 1 + child_h)
+            generated += 1
+            children.append(child)
+        children.sort(key=lambda n: (n.h, n.gen_order), reverse=True)
+        frontier.extend(children)
+        steps.append(SearchStep(len(steps), current, list(frontier), list(explored),
+                                children, f"path-consistent branches={len(children)}"))
+
+    return SearchResult(False, "CSP: Path Consistency", steps, [], [], 0, 0,
+                        len(explored), name_gen.count, max_frontier, 0.0,
+                        f"No path-consistent solution within depth {depth_limit}.")
+
+
+def run_csp_global_constraints_puzzle(start, goal, depth_limit=40, move_order=('L', 'R', 'U', 'D')):
+    """Global constraints cho 8-puzzle: all-different tiles, parity solvability va A* bounded depth."""
+    if set(start) != set(range(9)) or set(goal) != set(range(9)):
+        return SearchResult(False, "CSP: Global Constraints", [], [], [], 0, 0, 0, 0, 0, 0.0,
+                            "Global all-different constraint failed.")
+    if not is_solvable(start, goal):
+        return SearchResult(False, "CSP: Global Constraints", [], [], [], 0, 0, 0, 0, 0, 0.0,
+                            "Global parity constraint failed.")
+
+    result = run_astar(start, goal, move_order=move_order, cost_mode=1, heuristic_mode=1)
+    result.algorithm = "CSP: Global Constraints"
+    if result.success and result.total_steps > depth_limit:
+        result.success = False
+        result.message = f"Solution violates global max-depth constraint ({depth_limit})."
+    for step in result.steps:
+        step.note = (step.note + "\n" if step.note else "") + "Global constraints: all-different, solvable parity, bounded depth."
+    return result
+
+
+def run_csp_backtracking_search_puzzle(start, goal, depth_limit=10, move_order=('L', 'R', 'U', 'D')):
+    result = run_csp_backtracking_puzzle(start, goal, forward_checking=False,
+                                         depth_limit=depth_limit, move_order=move_order)
+    result.algorithm = "CSP: Backtracking Search"
+    return result
+
+
+def run_csp_ac3_puzzle(start, goal, depth_limit=10, move_order=('L', 'R', 'U', 'D')):
+    """AC-3 cho 8-puzzle: rut gon mien hanh dong ke tiep, roi backtracking tren mien da loc."""
+    opposite = {'L': 'R', 'R': 'L', 'U': 'D', 'D': 'U'}
+    domains = {i: set(move_order) for i in range(depth_limit)}
+    queue = deque((i, i + 1) for i in range(depth_limit - 1))
+    revisions = 0
+
+    def revise(xi, xj):
+        removed = set()
+        for action in set(domains[xi]):
+            if not any(next_action != opposite[action] for next_action in domains[xj]):
+                removed.add(action)
+        if removed:
+            domains[xi] -= removed
+            return True
+        return False
+
+    while queue:
+        xi, xj = queue.popleft()
+        if revise(xi, xj):
+            revisions += 1
+            if not domains[xi]:
+                return SearchResult(False, "CSP: AC-3", [], [], [], 0, 0, 0, 0, 0, 0.0,
+                                    f"AC-3 found an empty domain at A{xi + 1}.")
+            for xk in (xi - 1,):
+                if xk >= 0 and xk != xj:
+                    queue.append((xk, xi))
+
+    name_gen = NodeNameGenerator()
+    root = SearchNode(state=start, parent=None, parent_id=None, move=None,
+                      depth=0, cost=0, node_id=name_gen.get_or_create(start), gen_order=0)
+    steps = []
+    explored = []
+    generated = 1
+    max_frontier = 1
+    goal_pos = {v: i for i, v in enumerate(goal)}
+
+    def h(state):
+        return sum(
+            abs(i // 3 - goal_pos[v] // 3) + abs(i % 3 - goal_pos[v] % 3)
+            for i, v in enumerate(state) if v != 0
+        )
+
+    def bt(path_nodes, depth):
+        nonlocal generated, max_frontier
+        current = path_nodes[-1]
+        explored.append(current)
+        if current.state == goal:
+            steps.append(SearchStep(len(steps), current, [], list(explored), [],
+                                    f"Goal reached after AC-3 preprocessing ({revisions} revisions)."))
+            return current
+        if depth >= depth_limit:
+            return None
+
+        path_states = {n.state for n in path_nodes}
+        remaining = depth_limit - depth - 1
+        children = []
+        for move, next_state, _ in get_neighbors(current.state, move_order):
+            if move not in domains[depth]:
+                continue
+            if current.move and move == opposite[current.move]:
+                continue
+            if next_state in path_states:
+                continue
+            if h(next_state) > remaining:
+                continue
+            child_h = h(next_state)
+            child = SearchNode(state=next_state, parent=current, parent_id=current.id,
+                               move=move, depth=depth + 1, cost=current.cost + 1,
+                               node_id=name_gen.get_or_create(next_state),
+                               gen_order=generated, h=child_h,
+                               f=current.cost + 1 + child_h)
+            generated += 1
+            children.append(child)
+
+        children.sort(key=lambda n: (n.h, n.gen_order))
+        max_frontier = max(max_frontier, len(children))
+        steps.append(SearchStep(len(steps), current, children, list(explored), children,
+                                f"AC-3 domains ready, branches={len(children)}"))
+        for child in children:
+            result = bt(path_nodes + [child], depth + 1)
+            if result:
+                return result
+        return None
+
+    solution = bt([root], 0)
+    if solution:
+        path = reconstruct_path(solution)
+        moves = [n.move for n in path if n.move]
+        return SearchResult(True, "CSP: AC-3", steps, path, moves,
+                            len(moves), len(moves), len(explored), name_gen.count,
+                            max_frontier, 0.0)
+    return SearchResult(False, "CSP: AC-3", steps, [], [], 0, 0,
+                        len(explored), name_gen.count, max_frontier, 0.0,
+                        f"No AC-3 assisted solution within depth {depth_limit}.")
+
+
+def run_csp_min_conflicts_puzzle(start, goal, max_steps=100, move_order=('L', 'R', 'U', 'D')):
+    """Min-conflicts cho 8-puzzle: chon lan can co so xung dot thap nhat."""
+    name_gen = NodeNameGenerator()
+
+    def conflicts(state):
+        misplaced = sum(1 for i, v in enumerate(state) if v != 0 and v != goal[i])
+        goal_pos = {v: i for i, v in enumerate(goal)}
+        manhattan = sum(
+            abs(i // 3 - goal_pos[v] // 3) + abs(i % 3 - goal_pos[v] % 3)
+            for i, v in enumerate(state) if v != 0
+        )
+        return misplaced + manhattan
+
+    current = SearchNode(state=start, parent=None, parent_id=None, move=None,
+                         depth=0, cost=0, node_id=name_gen.get_or_create(start),
+                         gen_order=0, h=conflicts(start), f=conflicts(start))
+    explored = [current]
+    steps = []
+    visited = {start}
+    max_frontier = 1
+
+    for step_idx in range(max_steps + 1):
+        if current.state == goal:
+            path = reconstruct_path(current)
+            moves = [n.move for n in path if n.move]
+            steps.append(SearchStep(len(steps), current, [], list(explored), [], "No conflicts remain."))
+            return SearchResult(True, "CSP: Min-Conflicts", steps, path, moves,
+                                len(moves), len(moves), len(explored), name_gen.count,
+                                max_frontier, 0.0)
+
+        candidates = []
+        for move, next_state, _ in get_neighbors(current.state, move_order):
+            h_val = conflicts(next_state)
+            child = SearchNode(state=next_state, parent=current, parent_id=current.id,
+                               move=move, depth=current.depth + 1, cost=current.cost + 1,
+                               node_id=name_gen.get_or_create(next_state),
+                               gen_order=name_gen.count, h=h_val, f=h_val)
+            candidates.append(child)
+        if not candidates:
+            break
+
+        min_h = min(c.h for c in candidates)
+        best = [c for c in candidates if c.h == min_h]
+        unvisited_best = [c for c in best if c.state not in visited]
+        next_node = random.choice(unvisited_best or best)
+
+        max_frontier = max(max_frontier, len(candidates))
+        steps.append(SearchStep(len(steps), current, candidates, list(explored),
+                                candidates, f"min-conflicts={min_h}"))
+        current = next_node
+        explored.append(current)
+        visited.add(current.state)
+
+    path = reconstruct_path(current)
+    moves = [n.move for n in path if n.move]
+    return SearchResult(False, "CSP: Min-Conflicts", steps, path, moves,
+                        current.cost, current.depth, len(explored), name_gen.count,
+                        max_frontier, 0.0,
+                        f"Did not remove all conflicts within {max_steps} steps.")
+
+
+def run_and_or_search_puzzle(start, goal, max_depth=5, move_order=('L', 'R', 'U', 'D')):
+    """AND-OR Search cho 8-puzzle (nondeterministic: action can slip)."""
+    name_gen = NodeNameGenerator()
+    root = SearchNode(state=start, parent=None, parent_id=None, move=None,
+                      depth=0, cost=0, node_id=name_gen.get_or_create(start), gen_order=0)
+    steps = []
+    explored = []
+    nc = [1]
+    max_fs = 0
+
+    def outcomes(state, action):
+        valid = {m: s for m, s, _ in get_neighbors(state, move_order)}
+        if action not in valid:
+            return [state]
+        alts = [s for m, s in valid.items() if m != action]
+        return [valid[action], alts[0]] if alts else [valid[action]]
+
+    def or_search(node, state, path, depth):
+        nonlocal max_fs
+        explored.append(node)
+        if state == goal:
+            steps.append(SearchStep(len(steps), node, [], list(explored), [], "Goal!"))
+            return "Goal", [node]
+        if depth >= max_depth:
+            return None
+        for action in [m for m, _, _ in get_neighbors(state, move_order)]:
+            outs = outcomes(state, action)
+            children = []
+            for o in outs:
+                cn = SearchNode(state=o, parent=node, parent_id=node.id, move=action,
+                                depth=depth+1, cost=depth+1,
+                                node_id=name_gen.get_or_create(o), gen_order=nc[0])
+                nc[0] += 1
+                children.append(cn)
+            max_fs = max(max_fs, len(children))
+            steps.append(SearchStep(len(steps), node, [], list(explored), children,
+                                    f"OR:{action}, AND over {len(outs)} outcomes"))
+            plans, rep, ok = [], None, True
+            for cn, o in zip(children, outs):
+                if o == state or o in path:
+                    ok = False; break
+                sub = or_search(cn, o, path + [state], depth + 1)
+                if sub is None:
+                    ok = False; break
+                pt, pnodes = sub
+                plans.append(f"if {o[0]}..{o[-1]} -> {pt}")
+                rep = rep or [node] + pnodes
+            if ok and rep:
+                node.details = getattr(node, 'details', '') + f"\nPlan: {action}->{' | '.join(plans)}"
+                return f"{action}->({' | '.join(plans)})", rep
+        return None
+
+    res = or_search(root, start, [], 0)
+    if res:
+        plan, path = res
+        path[-1].details = getattr(path[-1], 'details', '') + f"\nFinal: {plan}"
+        moves = [n.move for n in path if n.move]
+        return SearchResult(True, "Complex Env: AND-OR Search", steps, path, moves,
+                            len(moves), len(moves), len(explored), name_gen.count, max_fs, 0.0)
+    return SearchResult(False, "Complex Env: AND-OR Search", steps, [root], [], 0, 0,
+                        len(explored), name_gen.count, max_fs, 0.0,
+                        f"No conditional plan within depth {max_depth}.")
+
+
+def run_no_observation_search_puzzle(start, goal, max_depth=10, move_order=('L', 'R', 'U', 'D')):
+    """Sensorless (No Observation) belief-state search cho 8-puzzle."""
+    def trans(state, action):
+        bi = state.index(0); r, c = bi // 3, bi % 3
+        dr, dc = {'L':(0,-1),'R':(0,1),'U':(-1,0),'D':(1,0)}[action]
+        nr, nc2 = r+dr, c+dc
+        if 0 <= nr < 3 and 0 <= nc2 < 3:
+            ni = nr*3+nc2; lst = list(state); lst[bi], lst[ni] = lst[ni], lst[bi]
+            return tuple(lst)
+        return state
+
+    def b2board(belief):
+        b = []
+        for i in range(9):
+            vals = {s[i] for s in belief}
+            b.append(next(iter(vals)) if len(vals) == 1 else 9)
+        return tuple(b)
+
+    nbrs = get_neighbors(start, move_order)
+    init_b = frozenset([start] + [s for _, s, _ in nbrs[:2]])
+    name_gen = NodeNameGenerator()
+    root = SearchNode(state=b2board(init_b), parent=None, parent_id=None, move=None,
+                      depth=0, cost=0, node_id=name_gen.get_or_create(init_b), gen_order=0)
+    root.belief = init_b
+    root.details = f"Initial belief: {len(init_b)} states"
+
+    frontier = deque([(init_b, root)])
+    visited = {init_b}
+    explored, steps = [], []
+    max_fs, nc = 1, [1]
+
+    while frontier:
+        max_fs = max(max_fs, len(frontier))
+        belief, node = frontier.popleft()
+        explored.append(node)
+        if all(s == goal for s in belief):
+            steps.append(SearchStep(len(steps), node, [x[1] for x in frontier],
+                                    list(explored), [], "Belief converged to Goal!"))
+            path = reconstruct_path(node)
+            moves = [n.move for n in path if n.move]
+            return SearchResult(True, "Complex Env: No Observation", steps, path, moves,
+                                len(moves), len(moves), len(explored), nc[0], max_fs, 0.0)
+        if node.depth >= max_depth:
+            continue
+        children = []
+        for action in move_order:
+            nb = frozenset(trans(s, action) for s in belief)
+            if nb in visited:
+                continue
+            visited.add(nb)
+            cn = SearchNode(state=b2board(nb), parent=node, parent_id=node.id, move=action,
+                            depth=node.depth+1, cost=node.cost+1,
+                            node_id=name_gen.get_or_create(nb), gen_order=nc[0])
+            cn.belief = nb
+            cn.details = f"Action:{action}, belief size:{len(nb)}"
+            nc[0] += 1
+            children.append((nb, cn))
+        for item in children:
+            frontier.append(item)
+        steps.append(SearchStep(len(steps), node, [x[1] for x in frontier],
+                                list(explored), [c for _, c in children],
+                                f"Belief size={len(belief)}"))
+    return SearchResult(False, "Complex Env: No Observation", steps, [root], [], 0, 0,
+                        len(explored), nc[0], max_fs, 0.0,
+                        f"No conformant plan within depth {max_depth}.")
+
+
+def run_partially_observable_search_puzzle(start, goal, max_steps=12, move_order=('L', 'R', 'U', 'D')):
+    """Partial Observation belief-state search cho 8-puzzle."""
+    from itertools import permutations as _perms
+
+    def obs(state):
+        return (state.index(0), state[:3])
+
+    def trans(state, action):
+        bi = state.index(0); r, c = bi // 3, bi % 3
+        dr, dc = {'L':(0,-1),'R':(0,1),'U':(-1,0),'D':(1,0)}[action]
+        nr, nc2 = r+dr, c+dc
+        if 0 <= nr < 3 and 0 <= nc2 < 3:
+            ni = nr*3+nc2; lst = list(state); lst[bi], lst[ni] = lst[ni], lst[bi]
+            return tuple(lst)
+        return state
+
+    def b2board(belief):
+        b = []
+        for i in range(9):
+            vals = {s[i] for s in belief}
+            b.append(next(iter(vals)) if len(vals) == 1 else 9)
+        return tuple(b)
+
+    row1 = start[:3]
+    remaining = [x for x in range(9) if x not in row1]
+    blist = []
+    for p in _perms(remaining):
+        s = row1 + p
+        if s.index(0) == start.index(0) and is_solvable(s, goal):
+            blist.append(s)
+    belief = frozenset(blist)
+
+    name_gen = NodeNameGenerator()
+    root = SearchNode(state=b2board(belief), parent=None, parent_id=None, move=None,
+                      depth=0, cost=0, node_id=name_gen.get_or_create(belief), gen_order=0)
+    root.belief = belief
+    root.details = f"Partial obs. Initial belief: {len(belief)} states"
+
+    steps = [SearchStep(0, root, [], [root], [], "Initial belief")]
+    explored = [root]
+    current_node = root
+    actual = start
+
+    astar_res = run_astar(start, goal, cost_mode=1, heuristic_mode=1)
+    if not astar_res.success:
+        return SearchResult(False, "Complex Env: Partial Observation", steps, [root],
+                            [], 0, 0, 1, 1, 1, 0.0, "A* failed on actual state.")
+
+    for depth, action in enumerate(astar_res.moves, 1):
+        if depth > max_steps:
+            break
+        next_actual = trans(actual, action)
+        o = obs(next_actual)
+        predicted = {trans(s, action) for s in belief}
+        next_b = frozenset(s for s in predicted if obs(s) == o)
+        cn = SearchNode(state=b2board(next_b), parent=current_node, parent_id=current_node.id,
+                        move=action, depth=depth, cost=depth,
+                        node_id=name_gen.get_or_create(next_b), gen_order=depth)
+        cn.belief = next_b
+        cn.details = (f"Action:{action}\nObs:{o}\n"
+                      f"Belief: {len(predicted)}->{len(next_b)}\nActual:{next_actual}")
+        explored.append(cn)
+        steps.append(SearchStep(len(steps), cn, [], list(explored), [], "Belief update"))
+        current_node = cn
+        actual = next_actual
+        belief = next_b
+        if actual == goal and all(s == goal for s in belief):
+            path = reconstruct_path(cn)
+            moves = [n.move for n in path if n.move]
+            return SearchResult(True, "Complex Env: Partial Observation", steps, path, moves,
+                                len(moves), len(moves), len(explored), name_gen.count, 1, 0.0)
+
+    path = reconstruct_path(current_node)
+    moves = [n.move for n in path if n.move]
+    return SearchResult(False, "Complex Env: Partial Observation", steps, path, moves,
+                        current_node.cost, current_node.depth,
+                        len(explored), name_gen.count, 1, 0.0,
+                        f"Did not converge after {max_steps} steps.")
+
+
 # =============================================================================
 # BỘ SINH TRẠNG THÁI NGẪU NHIÊN CHẮC CHẮN GIẢI ĐƯỢC
 # =============================================================================
@@ -1866,9 +2438,9 @@ class SearchVisualizerApp:
         tb.Label(algo_frame, text="Thuật toán:").pack(side=LEFT, padx=5)
         self.algo_combo = tb.Combobox(
             algo_frame, 
-            values=["BFS", "DFS", "IDS", "UCS", "A*", "Simple Hill Climbing", "Steepest Ascent Hill Climbing", "Stochastic Hill Climbing", "Random Restart Hill Climbing", "Local Beam Search"], 
+            values=ALGORITHM_CHOICES, 
             state="readonly", 
-            width=24
+            width=34
         )
         self.algo_combo.pack(side=LEFT, padx=5)
         self.algo_combo.set("A*")
@@ -2082,6 +2654,32 @@ class SearchVisualizerApp:
             self.lbs_heuristic_mode_var = tk.IntVar(value=1)
             tb.Radiobutton(self.options_frame, text="Manhattan", variable=self.lbs_heuristic_mode_var, value=1).pack(side=LEFT, padx=5)
             tb.Radiobutton(self.options_frame, text="Misplaced", variable=self.lbs_heuristic_mode_var, value=2).pack(side=LEFT, padx=5)
+        elif algo in CSP_ALGORITHMS:
+            limit_label = "Max Iterations:" if algo == "CSP: Min-Conflicts" else "Giới hạn Độ sâu (Limit):"
+            if algo == "CSP: Min-Conflicts":
+                default_limit = "100"
+            elif algo == "CSP: Global Constraints":
+                default_limit = "40"
+            elif algo == "CSP: Path Consistency":
+                default_limit = "20"
+            elif algo == "CSP: AC-3":
+                default_limit = "20"
+            else:
+                default_limit = "10"
+            tb.Label(self.options_frame, text=limit_label).pack(side=LEFT, padx=5)
+            self.entry_csp_limit = tb.Entry(self.options_frame, width=8)
+            self.entry_csp_limit.pack(side=LEFT, padx=5)
+            self.entry_csp_limit.insert(0, default_limit)
+        elif algo in COMPLEX_ENV_ALGORITHMS:
+            tb.Label(self.options_frame, text="Độ sâu tối đa / Số bước:").pack(side=LEFT, padx=5)
+            self.entry_complex_limit = tb.Entry(self.options_frame, width=8)
+            self.entry_complex_limit.pack(side=LEFT, padx=5)
+            if algo == "Complex Env: AND-OR Search":
+                self.entry_complex_limit.insert(0, "5")
+            elif algo == "Complex Env: No Observation":
+                self.entry_complex_limit.insert(0, "10")
+            else:
+                self.entry_complex_limit.insert(0, "12")
         else:
             tb.Label(self.options_frame, text="Thuật toán chạy với cấu hình mặc định.", font=("Helvetica", 9, "italic")).pack(side=LEFT, padx=5)
             
@@ -2098,14 +2696,64 @@ class SearchVisualizerApp:
         self.click_clear_log()
         self.status_var.set("Đã tải trạng thái mặc định của ví dụ.")
         
-    def draw_custom_board(self, state):
+    def is_csp_visualization_active(self):
+        return self.result is not None and self.result.algorithm.startswith("CSP:")
+
+    def get_moved_tile_value(self, node):
+        if not node or not node.parent:
+            return None
+        parent_blank = node.parent.state.index(0)
+        return node.state[parent_blank]
+
+    def get_candidate_tile_values(self, step):
+        values = set()
+        if not step:
+            return values
+        current_state = step.current_node.state
+        for child in step.generated_children:
+            try:
+                new_blank = child.state.index(0)
+                moved_value = current_state[new_blank]
+                if moved_value != 0:
+                    values.add(moved_value)
+            except Exception:
+                continue
+        return values
+
+    def append_csp_color_legend(self, log_lines):
+        if not self.is_csp_visualization_active():
+            return
+        log_lines.append("CSP COLORING:")
+        log_lines.append("Green = satisfied tile constraint")
+        log_lines.append("Red = conflict / unsatisfied tile constraint")
+        log_lines.append("Orange = current assigned move")
+        log_lines.append("Cyan = candidate domain values for next branch")
+        log_lines.append("")
+
+    def draw_custom_board(self, state, step=None):
         """Vẽ trạng thái state lên bàn cờ hiển thị 3x3 ở cột trái, highlight đúng/sai."""
         goal = parse_state(self.entry_goal.get())
+        csp_mode = self.is_csp_visualization_active()
+        moved_tile = self.get_moved_tile_value(step.current_node) if csp_mode and step else None
+        candidate_tiles = self.get_candidate_tile_values(step) if csp_mode and step else set()
         for r in range(3):
             for c in range(3):
                 val = state[r*3 + c]
                 if val == 0:
-                    self.tiles[r][c].config(text="", bg="#3A3F44")  # Ô trống có màu nền sẫm hơn
+                    self.tiles[r][c].config(text="", bg="#3A3F44")
+                elif val == 9:
+                    self.tiles[r][c].config(text="?", bg="#7F8C8D", fg="#FFFFFF")
+                elif csp_mode:
+                    is_correct = goal and (goal[r*3 + c] == val)
+                    if val == moved_tile:
+                        bg_color = "#F39C12"
+                    elif val in candidate_tiles:
+                        bg_color = "#17A2B8"
+                    elif is_correct:
+                        bg_color = "#00BC8C"
+                    else:
+                        bg_color = "#E74C3C"
+                    self.tiles[r][c].config(text=str(val), bg=bg_color, fg="#FFFFFF")
                 else:
                     # Highlight màu xanh lá nếu ô nằm đúng vị trí đích, ngược lại màu xanh dương
                     is_correct = goal and (goal[r*3 + c] == val)
@@ -2235,6 +2883,16 @@ class SearchVisualizerApp:
                 params['beam_width'] = 3
             params['heuristic_mode'] = self.lbs_heuristic_mode_var.get()
             params['max_iterations'] = 100
+        elif algo in CSP_ALGORITHMS:
+            try:
+                params['depth_limit'] = int(self.entry_csp_limit.get())
+            except Exception:
+                params['depth_limit'] = 10
+        elif algo in COMPLEX_ENV_ALGORITHMS:
+            try:
+                params['max_depth'] = int(self.entry_complex_limit.get())
+            except Exception:
+                params['max_depth'] = 5 if algo == "Complex Env: AND-OR Search" else (10 if algo == "Complex Env: No Observation" else 12)
             
         # Chạy thuật toán trong Thread phụ
         threading.Thread(target=self.run_search_worker, args=(algo, start, goal, params), daemon=True).start()
@@ -2272,6 +2930,30 @@ class SearchVisualizerApp:
                 max_iterations=params.get('max_iterations', 100),
                 heuristic_mode=params.get('heuristic_mode', 1)
             )
+        elif algo in ("CSP: Backtracking", "CSP: Backtracking Search"):
+            result = run_csp_backtracking_search_puzzle(start, goal,
+                                                        depth_limit=params.get('depth_limit', 10))
+        elif algo == "CSP: Forward Checking":
+            result = run_csp_backtracking_puzzle(start, goal, forward_checking=True,
+                                                 depth_limit=params.get('depth_limit', 10))
+        elif algo == "CSP: AC-3":
+            result = run_csp_ac3_puzzle(start, goal,
+                                        depth_limit=params.get('depth_limit', 20))
+        elif algo == "CSP: Path Consistency":
+            result = run_csp_path_consistency_puzzle(start, goal,
+                                                     depth_limit=params.get('depth_limit', 20))
+        elif algo == "CSP: Global Constraints":
+            result = run_csp_global_constraints_puzzle(start, goal,
+                                                       depth_limit=params.get('depth_limit', 40))
+        elif algo == "CSP: Min-Conflicts":
+            result = run_csp_min_conflicts_puzzle(start, goal,
+                                                  max_steps=params.get('depth_limit', 100))
+        elif algo == "Complex Env: AND-OR Search":
+            result = run_and_or_search_puzzle(start, goal, max_depth=params.get('max_depth', 5))
+        elif algo == "Complex Env: No Observation":
+            result = run_no_observation_search_puzzle(start, goal, max_depth=params.get('max_depth', 10))
+        elif algo == "Complex Env: Partial Observation":
+            result = run_partially_observable_search_puzzle(start, goal, max_steps=params.get('max_depth', 12))
         else:
             result = run_simple_hill_climbing(start, goal)
             
@@ -2358,7 +3040,7 @@ class SearchVisualizerApp:
         step = self.steps[self.current_step_idx]
         
         # Vẽ lại bàn cờ của bước này
-        self.draw_custom_board(step.current_node.state)
+        self.draw_custom_board(step.current_node.state, step)
         
         # Nếu đang ở chế độ xem lời giải (solution path)
         if self.view_mode_var.get() == "solution":
@@ -2373,6 +3055,7 @@ class SearchVisualizerApp:
             log_lines.append("TRẠNG THÁI BÀN CỜ:")
             log_lines.append(format_state_matrix(step.current_node.state))
             log_lines.append("")
+            self.append_csp_color_legend(log_lines)
 
             if self.current_step_idx > 0:
                 prev_state = self.result.solution_path[self.current_step_idx - 1].state
@@ -2432,6 +3115,7 @@ class SearchVisualizerApp:
         log_lines.append(f"STEP {step.step}{note_str}")
         log_lines.append("==================================================")
         log_lines.append("")
+        self.append_csp_color_legend(log_lines)
         
         log_lines.append("NODE:")
         log_lines.append(format_node_matrix(step.current_node))
@@ -2723,7 +3407,16 @@ class SearchVisualizerApp:
             ("Steepest Ascent Hill Climbing", lambda s, g: run_steepest_ascent_hill_climbing(s, g, heuristic_mode=1, max_iterations=100)),
             ("Stochastic Hill Climbing", lambda s, g: run_stochastic_hill_climbing(s, g, heuristic_mode=1, max_iterations=100)),
             ("Random Restart Hill Climbing", lambda s, g: run_random_restart_hill_climbing(s, g, heuristic_mode=1, max_iterations=100, restarts=5)),
-            ("Local Beam Search (k=3)", lambda s, g: run_local_beam_search(s, g, beam_width=3, max_iterations=100, heuristic_mode=1))
+            ("Local Beam Search (k=3)", lambda s, g: run_local_beam_search(s, g, beam_width=3, max_iterations=100, heuristic_mode=1)),
+            ("CSP: Path Consistency", lambda s, g: run_csp_path_consistency_puzzle(s, g, depth_limit=20)),
+            ("CSP: Global Constraints", lambda s, g: run_csp_global_constraints_puzzle(s, g, depth_limit=40)),
+            ("CSP: Backtracking Search", lambda s, g: run_csp_backtracking_search_puzzle(s, g, depth_limit=10)),
+            ("CSP: Forward Checking", lambda s, g: run_csp_backtracking_puzzle(s, g, forward_checking=True, depth_limit=10)),
+            ("CSP: AC-3", lambda s, g: run_csp_ac3_puzzle(s, g, depth_limit=20)),
+            ("CSP: Min-Conflicts", lambda s, g: run_csp_min_conflicts_puzzle(s, g, max_steps=100)),
+            ("Complex Env: AND-OR Search", lambda s, g: run_and_or_search_puzzle(s, g, max_depth=5)),
+            ("Complex Env: No Observation", lambda s, g: run_no_observation_search_puzzle(s, g, max_depth=10)),
+            ("Complex Env: Partial Observation", lambda s, g: run_partially_observable_search_puzzle(s, g, max_steps=12))
         ]
         
         for name, func in algos:
